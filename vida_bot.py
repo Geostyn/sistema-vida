@@ -52,11 +52,17 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
 VIDA_STATE  = os.path.join(VAULT, "ESTADO-VIDA.md")
 
 sys.path.insert(0, SCRIPT_DIR)
-from life_tracker import (
-    add_deporte_entry, add_alimentacion_entry, add_lexico_entry,
-    add_refran_entry, add_gasto_entry, add_idea_rapida,
-    add_trading_reflexion, add_diario_entry,
-)
+try:
+    from life_tracker import (
+        add_deporte_entry, add_alimentacion_entry, add_lexico_entry,
+        add_refran_entry, add_gasto_entry, add_idea_rapida,
+        add_trading_reflexion, add_diario_entry,
+    )
+except Exception as _lt_err:
+    logger.warning(f"life_tracker no disponible (modo cloud): {_lt_err}")
+    add_deporte_entry = add_alimentacion_entry = add_lexico_entry = \
+    add_refran_entry = add_gasto_entry = add_idea_rapida = \
+    add_trading_reflexion = add_diario_entry = lambda *a, **kw: False
 from vida_xp import (
     load_state, save_state, award_xp, update_streak,
     increment_counter, check_achievements,
@@ -630,24 +636,33 @@ def main():
 
     if APP_URL:
         # ── Modo webhook (Render / cloud) ──────────────────────
-        logger.info(f"🌐 Modo webhook — {APP_URL}")
-        token_suffix = BOT_TOKEN.split(":")[-1]
-        webhook_url  = f"{APP_URL}/webhook/{token_suffix}"
-        resp = requests.get(
-            f"{TELEGRAM_API}/setWebhook",
-            params={"url": webhook_url, "drop_pending_updates": True},
-            verify=SSL_VERIFY, timeout=10
-        )
-        logger.info(f"Webhook registrado: {resp.json()}")
-        send_message(
-            f"🟢 <b>VIDA BOT — ACTIVO (cloud)</b>\n"
-            f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
-            f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
-        )
-        import threading
-        threading.Thread(target=_schedule_loop, daemon=True).start()
+        # Flask arranca primero → Render detecta el puerto en <5s
         flask_app = _make_flask_app()
         port = int(os.environ.get("PORT", 8080))
+
+        def _bot_init():
+            import threading as _t
+            try:
+                token_suffix = BOT_TOKEN.split(":")[-1]
+                webhook_url  = f"{APP_URL}/webhook/{token_suffix}"
+                resp = requests.get(
+                    f"{TELEGRAM_API}/setWebhook",
+                    params={"url": webhook_url, "drop_pending_updates": True},
+                    verify=SSL_VERIFY, timeout=15
+                )
+                logger.info(f"Webhook: {resp.json()}")
+                send_message(
+                    f"🟢 <b>VIDA BOT — ACTIVO (cloud)</b>\n"
+                    f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
+                    f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
+                )
+            except Exception as e:
+                logger.error(f"Bot init error: {e}")
+            _t.Thread(target=_schedule_loop, daemon=True).start()
+
+        import threading
+        threading.Thread(target=_bot_init, daemon=True).start()
+        logger.info(f"🌐 Flask arrancando en puerto {port}")
         flask_app.run(host="0.0.0.0", port=port)
 
     else:
