@@ -633,60 +633,51 @@ def main():
 
     schedule.every().day.at(REMINDER_TIME).do(send_daily_reminder)
 
-    if APP_URL:
-        # ── Modo webhook (Render / cloud) ──────────────────────
-        # Flask arranca primero → Render detecta el puerto en <5s
-        flask_app = _make_flask_app()
-        port = int(os.environ.get("PORT", 8080))
+    import threading
 
-        def _bot_init():
-            import threading as _t
-            try:
-                webhook_url  = f"{APP_URL}/webhook"
+    def _background_init():
+        """Configura webhook o inicia polling según APP_URL. Siempre en background."""
+        try:
+            if APP_URL:
+                # Webhook: registrar URL con Telegram
                 resp = requests.get(
                     f"{TELEGRAM_API}/setWebhook",
-                    params={"url": webhook_url, "drop_pending_updates": True},
-                    verify=SSL_VERIFY, timeout=15
+                    params={"url": f"{APP_URL}/webhook", "drop_pending_updates": True},
+                    verify=SSL_VERIFY, timeout=15,
                 )
-                logger.info(f"Webhook: {resp.json()}")
-                send_message(
-                    f"🟢 <b>VIDA BOT — ACTIVO (cloud)</b>\n"
-                    f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
-                    f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
-                )
-            except Exception as e:
-                logger.error(f"Bot init error: {e}")
-            _t.Thread(target=_schedule_loop, daemon=True).start()
+                logger.info(f"Webhook registrado: {resp.json()}")
+            else:
+                # Polling local: bucle en este mismo thread de background
+                logger.info("💻 Modo polling local")
+                while True:
+                    try:
+                        for update in get_updates():
+                            msg  = update.get("message", {})
+                            text = msg.get("text", "").strip()
+                            if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
+                                process_message(text)
+                        schedule.run_pending()
+                        time.sleep(2)
+                    except Exception as e:
+                        logger.error(f"Polling error: {e}")
+                        time.sleep(10)
+                return  # nunca llega aquí en polling
 
-        import threading
-        threading.Thread(target=_bot_init, daemon=True).start()
-        logger.info(f"🌐 Flask arrancando en puerto {port}")
-        flask_app.run(host="0.0.0.0", port=port)
+            send_message(
+                f"🟢 <b>VIDA BOT — ACTIVO</b>\n"
+                f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
+                f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
+            )
+            threading.Thread(target=_schedule_loop, daemon=True).start()
+        except Exception as e:
+            logger.error(f"Background init error: {e}")
 
-    else:
-        # ── Modo polling (PC local) ────────────────────────────
-        logger.info("💻 Modo polling local")
-        send_message(
-            f"🟢 <b>VIDA BOT — ACTIVO (local)</b>\n"
-            f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
-            f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
-        )
-        while True:
-            try:
-                for update in get_updates():
-                    msg  = update.get("message", {})
-                    text = msg.get("text", "").strip()
-                    if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
-                        process_message(text)
-                schedule.run_pending()
-                time.sleep(2)
-            except KeyboardInterrupt:
-                logger.info("Vida Bot detenido.")
-                send_message("🔴 <b>Vida Bot DETENIDO.</b>")
-                break
-            except Exception as e:
-                logger.error(f"Error en el loop: {e}")
-                time.sleep(10)
+    # Flask SIEMPRE arranca — da el /health que Render y UptimeRobot necesitan
+    port = int(os.environ.get("PORT", 8080))
+    flask_app = _make_flask_app()
+    threading.Thread(target=_background_init, daemon=True).start()
+    logger.info(f"🌐 Flask arrancando en puerto {port}")
+    flask_app.run(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
