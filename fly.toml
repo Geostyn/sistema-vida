@@ -1,0 +1,11 @@
+app = "sistema-vida-bot"
+primary_region = "mad"
+
+[build]
+  dockerfile = "Dockerfile.vida"
+
+[env]
+  LOG_LEVEL = "INFO"
+
+# Bot de polling — no necesita HTTP services
+# Los env vars se configuran con: fly secrets set KEY=VALUE

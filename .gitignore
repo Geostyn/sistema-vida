@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+logs/
+*.db
+*.log
+*.pkl
+config.yaml
+.env
+.streamlit/secrets.toml
+vida_xp.json
+ml_stats.json

@@ -1,0 +1,5 @@
+groq>=0.4.0
+supabase>=2.10.0
+requests>=2.31.0
+schedule>=1.2.0
+pyyaml>=6.0
