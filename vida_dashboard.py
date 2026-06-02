@@ -31,13 +31,18 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.stop()
 
 # ── REST helper ───────────────────────────────────────────────
-@st.cache_data(ttl=120)
-def sb(table, _url, _key, select="*", filters=None, order=None, desc=False, limit=None):
-    """Llama directamente a la API REST de Supabase.
-    _url y _key con prefijo _ se pasan a la función pero no se usan como clave de caché."""
+def q(table, select="*", filters=None, order=None, desc=False, limit=None):
+    """Query directa a Supabase REST. Sin caché para garantizar que el API key se lee siempre."""
+    try:
+        key = st.secrets["SUPABASE_KEY"]
+        url = st.secrets["SUPABASE_URL"]
+    except Exception:
+        key = SUPABASE_KEY
+        url = SUPABASE_URL
+
     headers = {
-        "apikey": _key,
-        "Authorization": f"Bearer {_key}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
     }
     params = {"select": select}
     if filters:
@@ -47,19 +52,12 @@ def sb(table, _url, _key, select="*", filters=None, order=None, desc=False, limi
     if limit:
         params["limit"] = str(limit)
     try:
-        r = requests.get(
-            f"{_url}/rest/v1/{table}",
-            params=params, headers=headers, timeout=10,
-        )
+        r = requests.get(f"{url}/rest/v1/{table}", params=params, headers=headers, timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception as e:
         st.warning(f"Error cargando {table}: {e}")
         return []
-
-def q(table, **kwargs):
-    """Wrapper que inyecta URL y KEY automáticamente."""
-    return sb(table, SUPABASE_URL, SUPABASE_KEY, **kwargs)
 
 # ── Constantes ────────────────────────────────────────────────
 TODAY       = date.today().isoformat()
