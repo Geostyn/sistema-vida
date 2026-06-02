@@ -30,15 +30,15 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit.")
     st.stop()
 
-HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-}
-
 # ── REST helper ───────────────────────────────────────────────
 @st.cache_data(ttl=120)
-def sb(table, select="*", filters=None, order=None, desc=False, limit=None):
-    """Llama directamente a la API REST de Supabase."""
+def sb(table, _url, _key, select="*", filters=None, order=None, desc=False, limit=None):
+    """Llama directamente a la API REST de Supabase.
+    _url y _key con prefijo _ se pasan a la función pero no se usan como clave de caché."""
+    headers = {
+        "apikey": _key,
+        "Authorization": f"Bearer {_key}",
+    }
     params = {"select": select}
     if filters:
         params.update(filters)
@@ -48,14 +48,18 @@ def sb(table, select="*", filters=None, order=None, desc=False, limit=None):
         params["limit"] = str(limit)
     try:
         r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}",
-            params=params, headers=HEADERS, timeout=10,
+            f"{_url}/rest/v1/{table}",
+            params=params, headers=headers, timeout=10,
         )
         r.raise_for_status()
         return r.json()
     except Exception as e:
         st.warning(f"Error cargando {table}: {e}")
         return []
+
+def q(table, **kwargs):
+    """Wrapper que inyecta URL y KEY automáticamente."""
+    return sb(table, SUPABASE_URL, SUPABASE_KEY, **kwargs)
 
 # ── Constantes ────────────────────────────────────────────────
 TODAY       = date.today().isoformat()
@@ -83,7 +87,7 @@ def nivel_nombre(xp):
     return next((name for v, name in LEVELS if v == n), "Principiante")
 
 # ── Cargar datos ──────────────────────────────────────────────
-xp_rows  = sb("xp_state", select="state_json", filters={"id": "eq.1"})
+xp_rows  = q("xp_state", select="state_json", filters={"id": "eq.1"})
 xp_data  = xp_rows[0]["state_json"] if xp_rows else {}
 total_xp = xp_data.get("total_xp", 0)
 streaks  = xp_data.get("streaks", {})
@@ -143,7 +147,7 @@ with tab1:
 
 # ── TAB 2: Hábitos ────────────────────────────────────────────
 with tab2:
-    hab_data = sb("habitos", filters={"fecha": f"gte.{MONTH_START}"})
+    hab_data = q("habitos", filters={"fecha": f"gte.{MONTH_START}"})
 
     s1,s2,s3,s4 = st.columns(4)
     s1.metric("🚿 Ducha fría",  f"{streaks.get('ducha_fria',{}).get('current',0)}d racha")
@@ -178,7 +182,7 @@ with tab2:
 
 # ── TAB 3: Nutrición ──────────────────────────────────────────
 with tab3:
-    alim_data = sb("alimentacion", order="fecha", desc=True, limit=14)
+    alim_data = q("alimentacion", order="fecha", desc=True, limit=14)
 
     if alim_data:
         df_a = pd.DataFrame(alim_data)
@@ -213,7 +217,7 @@ with tab3:
 
 # ── TAB 4: Gastos ─────────────────────────────────────────────
 with tab4:
-    gastos_data = sb("gastos", filters={"fecha": f"gte.{MONTH_START}"})
+    gastos_data = q("gastos", filters={"fecha": f"gte.{MONTH_START}"})
 
     if gastos_data:
         df_g = pd.DataFrame(gastos_data)
@@ -250,7 +254,7 @@ with tab5:
 
     with col1:
         st.subheader("🏋️ Entrenamientos")
-        dep = sb("deporte", order="fecha", desc=True, limit=10)
+        dep = q("deporte", order="fecha", desc=True, limit=10)
         if dep:
             df_d = pd.DataFrame(dep)
             st.dataframe(df_d[[c for c in ["fecha","actividad","duracion","sensacion"] if c in df_d]],
@@ -259,7 +263,7 @@ with tab5:
             st.info("Sin entrenamientos aún.")
 
         st.subheader("📖 Léxico")
-        lex = sb("lexico", order="fecha", desc=True, limit=8)
+        lex = q("lexico", order="fecha", desc=True, limit=8)
         if lex:
             st.dataframe(pd.DataFrame(lex)[["fecha","palabra","definicion"]],
                          hide_index=True, use_container_width=True)
@@ -268,7 +272,7 @@ with tab5:
 
     with col2:
         st.subheader("📖 Diario")
-        diario = sb("diario", order="fecha", desc=True, limit=7)
+        diario = q("diario", order="fecha", desc=True, limit=7)
         if diario:
             for e in diario:
                 with st.expander(f"📅 {e.get('fecha','')}"):
@@ -279,7 +283,7 @@ with tab5:
             st.info("Sin entradas de diario aún.")
 
         st.subheader("💼 Ideas de negocio")
-        ideas = sb("ideas_negocio", order="fecha", desc=True, limit=5)
+        ideas = q("ideas_negocio", order="fecha", desc=True, limit=5)
         if ideas:
             for i in ideas:
                 st.write(f"💡 **{i.get('idea','')}** — {i.get('estado','')}")
