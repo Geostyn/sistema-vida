@@ -85,6 +85,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 IS_CLOUD     = bool(SUPABASE_URL and SUPABASE_KEY)
 
+APP_URL        = os.environ.get("APP_URL", "")   # ej: https://sistema-vida-bot.onrender.com
 SSL_VERIFY     = False
 TELEGRAM_API   = f"https://api.telegram.org/bot{BOT_TOKEN}"
 last_update_id = 0
@@ -576,14 +577,45 @@ def send_daily_reminder():
         )
 
 
+# ── Webhook Flask (modo cloud / Render) ───────────────────────
+def _make_flask_app():
+    from flask import Flask, request, jsonify
+    flask_app = Flask(__name__)
+    _token_suffix = BOT_TOKEN.split(":")[-1]
+
+    @flask_app.route(f"/webhook/{_token_suffix}", methods=["POST"])
+    def webhook():
+        data = request.get_json(force=True, silent=True) or {}
+        msg  = data.get("message", {})
+        text = msg.get("text", "").strip()
+        if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
+            import threading
+            threading.Thread(target=process_message, args=(text,), daemon=True).start()
+        return jsonify({"ok": True})
+
+    @flask_app.route("/health", methods=["GET"])
+    def health():
+        return jsonify({"status": "ok", "bot": "vida-bot"})
+
+    return flask_app
+
+
+def _schedule_loop():
+    while True:
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+        time.sleep(60)
+
+
 # ── Loop principal ─────────────────────────────────────────────
 def main():
     if not BOT_TOKEN or BOT_TOKEN == "TU_BOT_TOKEN":
-        logger.error("Bot token no configurado en config.yaml → telegram.bot_token")
+        logger.error("Bot token no configurado → telegram.bot_token")
         sys.exit(1)
     if not GROQ_API_KEY or GROQ_API_KEY.startswith("gsk_TU"):
-        logger.error("Groq API key no configurada en config.yaml → groq.api_key")
-        logger.error("Obtén tu clave GRATIS en: console.groq.com → API Keys")
+        logger.error("Groq API key no configurada → groq.api_key")
         sys.exit(1)
 
     logger.info("🤖 Vida Bot iniciado (Groq AI — gratuito)")
@@ -591,37 +623,57 @@ def main():
         logger.info("☁️  Modo cloud activo — datos en Supabase")
         from supabase_client import sync_xp_from_supabase
         sync_xp_from_supabase(os.path.join(SCRIPT_DIR, "vida_xp.json"))
-    xp_state  = load_state()
+    xp_state       = load_state()
     ov_level, ov_name = overall_level(xp_state)
-
-    send_message(
-        f"🟢 <b>VIDA BOT — ACTIVO</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚔️ Tu nivel: {ov_level} — {ov_name}\n"
-        f"✨ XP Total: {xp_state['total_xp']:,}\n\n"
-        f"Listo para recibir tu dictado del día.\n"
-        f"Recordatorio diario a las {REMINDER_TIME}.\n"
-        f"Escribe /ayuda para ver todos los comandos."
-    )
 
     schedule.every().day.at(REMINDER_TIME).do(send_daily_reminder)
 
-    while True:
-        try:
-            for update in get_updates():
-                msg  = update.get("message", {})
-                text = msg.get("text", "").strip()
-                if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
-                    process_message(text)
-            schedule.run_pending()
-            time.sleep(2)
-        except KeyboardInterrupt:
-            logger.info("Vida Bot detenido.")
-            send_message("🔴 <b>Vida Bot DETENIDO.</b>")
-            break
-        except Exception as e:
-            logger.error(f"Error en el loop: {e}")
-            time.sleep(10)
+    if APP_URL:
+        # ── Modo webhook (Render / cloud) ──────────────────────
+        logger.info(f"🌐 Modo webhook — {APP_URL}")
+        token_suffix = BOT_TOKEN.split(":")[-1]
+        webhook_url  = f"{APP_URL}/webhook/{token_suffix}"
+        resp = requests.get(
+            f"{TELEGRAM_API}/setWebhook",
+            params={"url": webhook_url, "drop_pending_updates": True},
+            verify=SSL_VERIFY, timeout=10
+        )
+        logger.info(f"Webhook registrado: {resp.json()}")
+        send_message(
+            f"🟢 <b>VIDA BOT — ACTIVO (cloud)</b>\n"
+            f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
+            f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
+        )
+        import threading
+        threading.Thread(target=_schedule_loop, daemon=True).start()
+        flask_app = _make_flask_app()
+        port = int(os.environ.get("PORT", 8080))
+        flask_app.run(host="0.0.0.0", port=port)
+
+    else:
+        # ── Modo polling (PC local) ────────────────────────────
+        logger.info("💻 Modo polling local")
+        send_message(
+            f"🟢 <b>VIDA BOT — ACTIVO (local)</b>\n"
+            f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
+            f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
+        )
+        while True:
+            try:
+                for update in get_updates():
+                    msg  = update.get("message", {})
+                    text = msg.get("text", "").strip()
+                    if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
+                        process_message(text)
+                schedule.run_pending()
+                time.sleep(2)
+            except KeyboardInterrupt:
+                logger.info("Vida Bot detenido.")
+                send_message("🔴 <b>Vida Bot DETENIDO.</b>")
+                break
+            except Exception as e:
+                logger.error(f"Error en el loop: {e}")
+                time.sleep(10)
 
 
 if __name__ == "__main__":
