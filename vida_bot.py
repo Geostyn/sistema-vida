@@ -587,9 +587,8 @@ def send_daily_reminder():
 def _make_flask_app():
     from flask import Flask, request, jsonify
     flask_app = Flask(__name__)
-    _token_suffix = BOT_TOKEN.split(":")[-1]
 
-    @flask_app.route(f"/webhook/{_token_suffix}", methods=["POST"])
+    @flask_app.route("/webhook", methods=["POST"])
     def webhook():
         data = request.get_json(force=True, silent=True) or {}
         msg  = data.get("message", {})
@@ -643,8 +642,7 @@ def main():
         def _bot_init():
             import threading as _t
             try:
-                token_suffix = BOT_TOKEN.split(":")[-1]
-                webhook_url  = f"{APP_URL}/webhook/{token_suffix}"
+                webhook_url  = f"{APP_URL}/webhook"
                 resp = requests.get(
                     f"{TELEGRAM_API}/setWebhook",
                     params={"url": webhook_url, "drop_pending_updates": True},
