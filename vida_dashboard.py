@@ -101,7 +101,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("🌟 Nivel Global", nivel)
 c2.metric("✨ XP Total", f"{total_xp:,}")
 c3.metric("🏆 Logros", f"{len(logros)}/19")
-c4.metric("🙏 Racha oración", f"{streaks.get('oracion',{}).get('current',0)} días")
+c4.metric("🙏 Racha oración", f"{streaks.get('oracion', 0)} días")
 
 st.divider()
 
@@ -148,10 +148,10 @@ with tab2:
     hab_data = q("habitos", filters={"fecha": f"gte.{MONTH_START}"})
 
     s1,s2,s3,s4 = st.columns(4)
-    s1.metric("🚿 Ducha fría",  f"{streaks.get('ducha_fria',{}).get('current',0)}d racha")
-    s2.metric("🌿 Té de clavo", f"{streaks.get('te_clavo',{}).get('current',0)}d racha")
-    s3.metric("🙏 Oración",     f"{streaks.get('oracion',{}).get('current',0)}d racha")
-    s4.metric("🕊️ Silencio",   f"{streaks.get('silencio',{}).get('current',0)}d racha")
+    s1.metric("🚿 Ducha fría",  f"{streaks.get('ducha_fria', 0)}d racha")
+    s2.metric("🌿 Té de clavo", f"{streaks.get('te_clavo', 0)}d racha")
+    s3.metric("🙏 Oración",     f"{streaks.get('oracion', 0)}d racha")
+    s4.metric("🕊️ Silencio",   f"{streaks.get('silencio', 0)}d racha")
 
     if hab_data:
         df_h = pd.DataFrame(hab_data)
