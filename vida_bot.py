@@ -535,32 +535,36 @@ def process_message(text: str):
     # Procesar mensaje libre con IA
     send_message("⏳ Analizando tu día...")
 
-    vida_state = read_vida_state()
-    result     = call_groq(text, vida_state)
-    updates    = result.get("updates", {})
-    response   = result.get("response", "✅ Recibido.")
+    try:
+        vida_state = read_vida_state()
+        result     = call_groq(text, vida_state)
+        updates    = result.get("updates", {})
+        response   = result.get("response", "✅ Recibido.")
 
-    files_updated, xp_messages = apply_updates(updates)
-    last_entry_date = datetime.now().date()
+        files_updated, xp_messages = apply_updates(updates)
+        last_entry_date = datetime.now().date()
 
-    # Respuesta principal
-    final_reply = response
-    if files_updated:
-        final_reply += f"\n\n<i>📁 Guardado: {' · '.join(files_updated)}</i>"
+        # Respuesta principal
+        final_reply = response
+        if files_updated:
+            final_reply += f"\n\n<i>📁 Guardado: {' · '.join(files_updated)}</i>"
 
-    send_message(final_reply)
+        send_message(final_reply)
 
-    # Mensajes de XP (si los hay)
-    if xp_messages:
-        xp_text = "\n".join(xp_messages)
-        xp_state = load_state()
-        xp_summary = get_xp_summary(xp_state)
-        send_message(
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎮 <b>PUNTOS DE EXPERIENCIA</b>\n\n"
-            f"{xp_text}\n\n"
-            f"<i>{xp_summary}</i>"
-        )
+        # Mensajes de XP (si los hay)
+        if xp_messages:
+            xp_text  = "\n".join(xp_messages)
+            xp_state = load_state()
+            xp_summary = get_xp_summary(xp_state)
+            send_message(
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎮 <b>PUNTOS DE EXPERIENCIA</b>\n\n"
+                f"{xp_text}\n\n"
+                f"<i>{xp_summary}</i>"
+            )
+    except Exception as e:
+        logger.error(f"Error en process_message: {e}", exc_info=True)
+        send_message(f"❌ Error procesando tu mensaje: <code>{type(e).__name__}: {e}</code>")
 
 
 # ── Recordatorio diario ────────────────────────────────────────
