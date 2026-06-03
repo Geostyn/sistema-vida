@@ -191,15 +191,14 @@ def load_state() -> dict:
         try:
             with open(XP_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            # Migrate: ensure all current skills/streaks/counters exist
+            # Migrate: ensure ALL keys from default state exist
             defaults = _default_state()
-            state.setdefault("skills", {})
+            for k, v in defaults.items():
+                state.setdefault(k, v)
             for sk in SKILLS:
                 state["skills"].setdefault(sk, {"xp": 0, "level": 1})
-            state.setdefault("streaks", {})
             for k, v in defaults["streaks"].items():
                 state["streaks"].setdefault(k, v)
-            state.setdefault("counters", {})
             for k, v in defaults["counters"].items():
                 state["counters"].setdefault(k, v)
             return state
