@@ -583,6 +583,38 @@ def send_daily_reminder():
         )
 
 
+# ── Transcripción de audio (Groq Whisper — gratuito) ─────────
+def transcribe_voice(file_id: str) -> str:
+    """Descarga el audio de Telegram y lo transcribe con Groq Whisper."""
+    try:
+        # Obtener ruta del archivo en Telegram
+        r = requests.get(
+            f"{TELEGRAM_API}/getFile",
+            params={"file_id": file_id},
+            verify=SSL_VERIFY, timeout=10,
+        )
+        file_path = r.json()["result"]["file_path"]
+
+        # Descargar audio
+        audio_url  = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        audio_data = requests.get(audio_url, verify=SSL_VERIFY, timeout=30).content
+
+        # Transcribir con Groq Whisper
+        from groq import Groq
+        client        = Groq(api_key=GROQ_API_KEY)
+        transcription = client.audio.transcriptions.create(
+            file=("audio.ogg", audio_data),
+            model="whisper-large-v3",
+            language="es",
+        )
+        text = transcription.text.strip()
+        logger.info(f"Audio transcrito: {text[:80]}")
+        return text
+    except Exception as e:
+        logger.error(f"Error transcribiendo audio: {e}")
+        return ""
+
+
 # ── Webhook Flask (modo cloud / Render) ───────────────────────
 def _make_flask_app():
     from flask import Flask, request, jsonify
@@ -593,6 +625,14 @@ def _make_flask_app():
         data = request.get_json(force=True, silent=True) or {}
         msg  = data.get("message", {})
         text = msg.get("text", "").strip()
+
+        # Soporte de mensajes de voz
+        if not text and msg.get("voice"):
+            send_message("🎤 Transcribiendo tu audio...")
+            text = transcribe_voice(msg["voice"]["file_id"])
+            if not text:
+                send_message("❌ No pude transcribir el audio. Intenta enviarlo como texto.")
+
         if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
             import threading
             threading.Thread(target=process_message, args=(text,), daemon=True).start()
