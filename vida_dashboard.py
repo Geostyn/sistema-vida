@@ -7,7 +7,7 @@ import requests
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 st.set_page_config(
     page_title="Sistema de Vida — Geostyn",
@@ -19,6 +19,7 @@ st.set_page_config(
 st.markdown("""
 <style>
 div[data-testid="stMetric"] { background:#1e2130; border-radius:10px; padding:14px; }
+.stTabs [data-baseweb="tab"] { font-size:15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -32,7 +33,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 # ── REST helper ───────────────────────────────────────────────
 def q(table, select="*", filters=None, order=None, desc=False, limit=None):
-    """Query directa a Supabase REST. Sin caché para garantizar que el API key se lee siempre."""
     try:
         key = st.secrets["SUPABASE_KEY"]
         url = st.secrets["SUPABASE_URL"]
@@ -40,10 +40,7 @@ def q(table, select="*", filters=None, order=None, desc=False, limit=None):
         key = SUPABASE_KEY
         url = SUPABASE_URL
 
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-    }
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
     params = {"select": select}
     if filters:
         params.update(filters)
@@ -63,11 +60,12 @@ def q(table, select="*", filters=None, order=None, desc=False, limit=None):
 TODAY       = date.today().isoformat()
 MONTH_START = TODAY[:8] + "01"
 MONTH_LABEL = datetime.now().strftime("%B %Y")
+WEEK_START  = (date.today() - timedelta(days=date.today().weekday())).isoformat()
 
 LEVELS = [
-    (0,"Principiante"),(500,"Aprendiz"),(1500,"Iniciado"),
-    (3000,"Practicante"),(6000,"Competente"),(10000,"Experto"),
-    (15000,"Maestro"),(22000,"Gran Maestro"),(30000,"Leyenda"),(40000,"Inmortal ⭐"),
+    (0,"Principiante"),(100,"Aprendiz"),(250,"Iniciado"),
+    (500,"Practicante"),(1000,"Competente"),(2000,"Experto"),
+    (4000,"Maestro"),(8000,"Gran Maestro"),(15000,"Leyenda"),(30000,"Inmortal ⭐"),
 ]
 SKILLS_INFO = {
     "fitness":    ("💪","Fitness"),
@@ -84,137 +82,303 @@ def nivel_nombre(xp):
     n = max((v for v, _ in LEVELS if xp >= v), default=0)
     return next((name for v, name in LEVELS if v == n), "Principiante")
 
-# ── Cargar datos ──────────────────────────────────────────────
+def streak_val(streaks, key):
+    v = streaks.get(key, 0)
+    return v if isinstance(v, (int, float)) else v.get("current", 0)
+
+# ── Cargar XP ─────────────────────────────────────────────────
 xp_rows  = q("xp_state", select="state_json", filters={"id": "eq.1"})
 xp_data  = xp_rows[0]["state_json"] if xp_rows else {}
 total_xp = xp_data.get("total_xp", 0)
 streaks  = xp_data.get("streaks", {})
 skills   = xp_data.get("skills", {})
+counters = xp_data.get("counters", {})
 logros   = xp_data.get("achievements_unlocked", [])
 nivel    = nivel_nombre(total_xp)
 
 # ── Cabecera ──────────────────────────────────────────────────
-st.title("⚔️ Sistema de Vida Personal")
-st.caption(f"Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')} · Mes: {MONTH_LABEL}")
+st.title("⚔️ Sistema de Vida — Geostyn")
+st.caption(f"Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')} · {MONTH_LABEL}")
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("🌟 Nivel Global", nivel)
-c2.metric("✨ XP Total", f"{total_xp:,}")
-c3.metric("🏆 Logros", f"{len(logros)}/19")
-c4.metric("🙏 Racha oración", f"{streaks.get('oracion', 0)} días")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("🌟 Nivel Global",      nivel)
+c2.metric("✨ XP Total",           f"{total_xp:,}")
+c3.metric("🏆 Logros",             f"{len(logros)}/19")
+c4.metric("🙏 Racha oración",      f"{streak_val(streaks,'oracion')} días")
+c5.metric("🚿 Racha ducha fría",   f"{streak_val(streaks,'ducha_fria')} días")
 
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "⚔️ Perfil RPG", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos", "📖 Historial"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "⚔️ Perfil RPG", "🏋️ Deporte", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos", "📖 Diario & Ideas"
 ])
 
-# ── TAB 1: Perfil RPG ─────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════
+# TAB 1 — PERFIL RPG
+# ════════════════════════════════════════════════════════════════
 with tab1:
-    st.subheader("Habilidades")
-    skill_names, skill_vals = [], []
+    col_r, col_s = st.columns([1, 1])
+
+    with col_r:
+        st.subheader("🌟 Nivel Global")
+        _, _, xp_in, xp_next = (lambda t: t)((
+            lambda xp: next(
+                (( xp - LEVELS[i][0], LEVELS[i+1][0] - LEVELS[i][0] ) for i in range(len(LEVELS)-1) if xp >= LEVELS[i][0] and xp < LEVELS[i+1][0]),
+                (xp - LEVELS[-1][0], 0)
+            )
+        )(total_xp)) if False else (0, 0, 0, 1)  # placeholder, calculo abajo
+
+        # Calcular progreso real
+        xp_in, xp_next = 0, 1
+        for i in range(len(LEVELS) - 1):
+            if LEVELS[i][0] <= total_xp < LEVELS[i+1][0]:
+                xp_in  = total_xp - LEVELS[i][0]
+                xp_next = LEVELS[i+1][0] - LEVELS[i][0]
+                break
+        pct = int(xp_in / xp_next * 100) if xp_next else 100
+        st.progress(pct / 100, text=f"{nivel} — {xp_in}/{xp_next} XP ({pct}%)")
+
+        st.subheader("📦 Contadores")
+        cc1, cc2 = st.columns(2)
+        cc1.metric("🏋️ Entrenamientos", counters.get("entrenamientos", 0))
+        cc2.metric("📖 Palabras léxico",  counters.get("lexico", 0))
+        cc1.metric("💬 Refranes",         counters.get("refranes", 0))
+        cc2.metric("💼 Ideas negocio",    counters.get("ideas", 0))
+        cc1.metric("📋 Días diario",       counters.get("dias_diario", 0))
+
+    with col_s:
+        st.subheader("📊 Radar de habilidades")
+        skill_names, skill_vals = [], []
+        for sk_id, (emoji, name) in SKILLS_INFO.items():
+            sk = skills.get(sk_id, {"xp": 0, "level": 1})
+            skill_names.append(f"{emoji} {name}")
+            skill_vals.append(sk.get("level", 1))
+
+        fig_radar = go.Figure(go.Scatterpolar(
+            r=skill_vals + [skill_vals[0]],
+            theta=skill_names + [skill_names[0]],
+            fill="toself",
+            fillcolor="rgba(76,175,80,0.25)",
+            line=dict(color="#4CAF50", width=2),
+        ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0,10]), bgcolor="#0e1117"),
+            paper_bgcolor="#0e1117", font=dict(color="white"),
+            height=320, margin=dict(t=20,b=20),
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    st.subheader("🎯 Habilidades detalladas")
     for sk_id, (emoji, name) in SKILLS_INFO.items():
-        sk = skills.get(sk_id, {"xp": 0, "level": 1})
-        skill_names.append(f"{emoji} {name}")
-        skill_vals.append(sk.get("level", 1))
-
-    fig_radar = go.Figure(go.Scatterpolar(
-        r=skill_vals + [skill_vals[0]],
-        theta=skill_names + [skill_names[0]],
-        fill="toself",
-        fillcolor="rgba(76,175,80,0.25)",
-        line=dict(color="#4CAF50", width=2),
-    ))
-    fig_radar.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0,10]), bgcolor="#0e1117"),
-        paper_bgcolor="#0e1117", font=dict(color="white"),
-        height=380, margin=dict(t=20,b=20),
-    )
-    st.plotly_chart(fig_radar, use_container_width=True)
-
-    rows = [{"Habilidad": f"{e} {n}", "Nivel": skills.get(k,{}).get("level",1), "XP": f"{skills.get(k,{}).get('xp',0):,}"}
-            for k,(e,n) in SKILLS_INFO.items()]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        sk      = skills.get(sk_id, {"xp": 0, "level": 1})
+        sk_xp   = sk.get("xp", 0)
+        sk_lvl  = sk.get("level", 1)
+        sk_in, sk_next = 0, 1
+        for i in range(len(LEVELS) - 1):
+            if LEVELS[i][0] <= sk_xp < LEVELS[i+1][0]:
+                sk_in   = sk_xp - LEVELS[i][0]
+                sk_next = LEVELS[i+1][0] - LEVELS[i][0]
+                break
+        pct_sk = int(sk_in / sk_next * 100) if sk_next else 100
+        st.progress(pct_sk / 100,
+                    text=f"{emoji} **{name}** — Nv.{sk_lvl} · {sk_xp:,} XP ({pct_sk}%)")
 
     st.subheader("🏆 Logros")
     if logros:
-        st.success(f"**{len(logros)}/19** desbloqueados: {', '.join(logros)}")
+        st.success(f"**{len(logros)}/19** desbloqueados")
+        cols_ach = st.columns(3)
+        for i, a in enumerate(logros):
+            cols_ach[i % 3].write(f"✅ {a}")
     else:
         st.info("Sin logros aún — ¡empieza hoy!")
 
-# ── TAB 2: Hábitos ────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════
+# TAB 2 — DEPORTE
+# ════════════════════════════════════════════════════════════════
 with tab2:
+    dep_data = q("deporte", order="fecha", desc=True, limit=50)
+
+    dep_mes  = [d for d in dep_data if d.get("fecha", "") >= MONTH_START]
+    dep_sem  = [d for d in dep_data if d.get("fecha", "") >= WEEK_START]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🏋️ Entrenos este mes",    len(dep_mes))
+    m2.metric("🔥 Entrenos esta semana", len(dep_sem))
+    m3.metric("💪 Racha entreno",        f"{streak_val(streaks,'fitness')} días")
+    m4.metric("📊 Total histórico",      counters.get("entrenamientos", 0))
+
+    if dep_data:
+        df_d = pd.DataFrame(dep_data)
+
+        # Gráfico de actividades del mes
+        if dep_mes:
+            actividades = pd.DataFrame(dep_mes)["actividad"].value_counts()
+            fig_act = go.Figure(go.Bar(
+                x=actividades.index.tolist(),
+                y=actividades.values.tolist(),
+                marker_color="#4CAF50",
+                text=actividades.values.tolist(),
+                textposition="outside",
+            ))
+            fig_act.update_layout(
+                title=f"Actividades en {MONTH_LABEL}",
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                font=dict(color="white"), height=260, margin=dict(t=50,b=20),
+            )
+            st.plotly_chart(fig_act, use_container_width=True)
+
+        st.subheader("📋 Historial de entrenamientos")
+        cols_dep = [c for c in ["fecha","actividad","duracion","distancia","sensacion","notas"] if c in df_d.columns]
+        df_show = df_d[cols_dep].copy()
+
+        # Mostrar con expanders para ver detalle
+        for _, row in df_d.head(20).iterrows():
+            actividad = row.get("actividad", "—")
+            fecha     = row.get("fecha", "—")
+            duracion  = row.get("duracion", "") or ""
+            distancia = row.get("distancia", "") or ""
+            sensacion = row.get("sensacion", "") or ""
+            notas     = row.get("notas", "") or ""
+            label = f"📅 {fecha}  ·  {actividad}"
+            if distancia: label += f"  ·  📏 {distancia}"
+            if duracion:  label += f"  ·  ⏱️ {duracion}"
+            with st.expander(label):
+                ec1, ec2, ec3 = st.columns(3)
+                ec1.write(f"**Actividad:** {actividad}")
+                ec2.write(f"**Distancia:** {distancia or '—'}")
+                ec3.write(f"**Duración:** {duracion or '—'}")
+                ec1.write(f"**Sensación:** {sensacion or '—'}")
+                if notas:
+                    st.write(f"**Notas:** {notas}")
+    else:
+        st.info("Sin entrenamientos registrados aún.")
+
+# ════════════════════════════════════════════════════════════════
+# TAB 3 — HÁBITOS
+# ════════════════════════════════════════════════════════════════
+with tab3:
     hab_data = q("habitos", filters={"fecha": f"gte.{MONTH_START}"})
 
-    s1,s2,s3,s4 = st.columns(4)
-    s1.metric("🚿 Ducha fría",  f"{streaks.get('ducha_fria', 0)}d racha")
-    s2.metric("🌿 Té de clavo", f"{streaks.get('te_clavo', 0)}d racha")
-    s3.metric("🙏 Oración",     f"{streaks.get('oracion', 0)}d racha")
-    s4.metric("🕊️ Silencio",   f"{streaks.get('silencio', 0)}d racha")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("🚿 Ducha fría",  f"{streak_val(streaks,'ducha_fria')}d racha")
+    s2.metric("🌿 Té de clavo", f"{streak_val(streaks,'te_clavo')}d racha")
+    s3.metric("🙏 Oración",     f"{streak_val(streaks,'oracion')}d racha")
+    s4.metric("🕊️ Silencio",   f"{streak_val(streaks,'silencio')}d racha")
 
     if hab_data:
-        df_h = pd.DataFrame(hab_data)
-        days = (date.today() - date(int(TODAY[:4]), int(TODAY[5:7]), 1)).days + 1
+        df_h  = pd.DataFrame(hab_data)
+        days  = max(len(df_h), 1)
         counts = {
-            "Ducha fría 🚿":  int(df_h.get("ducha_fria", pd.Series(dtype=bool)).sum()),
-            "Té de clavo 🌿": int(df_h.get("te_clavo",   pd.Series(dtype=bool)).sum()),
-            "Oración 🙏":     int(df_h.get("oracion",    pd.Series(dtype=bool)).sum()),
-            "Silencio 🕊️":   int(df_h.get("silencio",   pd.Series(dtype=bool)).sum()),
+            "Ducha fría 🚿":  int(pd.to_numeric(df_h.get("ducha_fria",  pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
+            "Té de clavo 🌿": int(pd.to_numeric(df_h.get("te_clavo",    pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
+            "Oración 🙏":     int(pd.to_numeric(df_h.get("oracion",     pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
+            "Silencio 🕊️":   int(pd.to_numeric(df_h.get("silencio",    pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
         }
-        colors = ["#4CAF50" if v/days>=0.7 else "#FF9800" if v/days>=0.4 else "#f44336"
+        dias_mes = (date.today() - date(int(TODAY[:4]), int(TODAY[5:7]), 1)).days + 1
+        colors = ["#4CAF50" if v/dias_mes>=0.7 else "#FF9800" if v/dias_mes>=0.4 else "#f44336"
                   for v in counts.values()]
         fig = go.Figure(go.Bar(
             x=list(counts.keys()), y=list(counts.values()), marker_color=colors,
-            text=[f"{v}/{days}" for v in counts.values()], textposition="outside",
+            text=[f"{v}/{dias_mes}" for v in counts.values()], textposition="outside",
         ))
         fig.update_layout(
-            title=f"Hábitos en {MONTH_LABEL}",
-            yaxis=dict(range=[0,days+3]),
+            title=f"Hábitos cumplidos en {MONTH_LABEL}",
+            yaxis=dict(range=[0, dias_mes + 3]),
             paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
             font=dict(color="white"), height=300, margin=dict(t=50,b=20),
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("📋 Registro diario")
+        cols_h = [c for c in ["fecha","ducha_fria","te_clavo","oracion","silencio"] if c in df_h.columns]
+        st.dataframe(
+            df_h[cols_h].sort_values("fecha", ascending=False).head(30),
+            hide_index=True, use_container_width=True
+        )
     else:
         st.info("Sin datos de hábitos este mes aún.")
 
-# ── TAB 3: Nutrición ──────────────────────────────────────────
-with tab3:
-    alim_data = q("alimentacion", order="fecha", desc=True, limit=14)
+# ════════════════════════════════════════════════════════════════
+# TAB 4 — NUTRICIÓN
+# ════════════════════════════════════════════════════════════════
+with tab4:
+    alim_data = q("alimentacion", order="fecha", desc=True, limit=30)
 
     if alim_data:
         df_a = pd.DataFrame(alim_data)
+
         avg_prot = pd.to_numeric(df_a.get("prot_g",  pd.Series()), errors="coerce").mean()
         avg_kcal = pd.to_numeric(df_a.get("kcal",    pd.Series()), errors="coerce").mean()
         avg_agua = pd.to_numeric(df_a.get("agua_l",  pd.Series()), errors="coerce").mean()
         dias_ok  = int((pd.to_numeric(df_a.get("prot_g", pd.Series()), errors="coerce") >= 150).sum())
 
-        m1,m2,m3,m4 = st.columns(4)
-        m1.metric("💪 Proteína media", f"{avg_prot:.0f}g" if avg_prot==avg_prot else "—", "target 150g")
-        m2.metric("🔥 Kcal media",     f"{avg_kcal:.0f}"  if avg_kcal==avg_kcal else "—", "target 2800")
-        m3.metric("💧 Agua media",     f"{avg_agua:.1f}L" if avg_agua==avg_agua else "—", "target 3L")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("💪 Proteína media", f"{avg_prot:.0f}g"  if avg_prot == avg_prot else "—", "target 150g")
+        m2.metric("🔥 Kcal media",     f"{avg_kcal:.0f}"   if avg_kcal == avg_kcal else "—", "target 2800")
+        m3.metric("💧 Agua media",     f"{avg_agua:.1f}L"  if avg_agua == avg_agua else "—", "target 3L")
         m4.metric("✅ Días proteína OK", f"{dias_ok}/{len(df_a)}")
 
+        # Gráfico proteína
         prot_vals = pd.to_numeric(df_a.get("prot_g", pd.Series()), errors="coerce")
-        fig = go.Figure(go.Bar(
-            x=df_a.get("fecha", pd.Series()), y=prot_vals,
-            marker_color=["#4CAF50" if (v or 0)>=150 else "#f44336" for v in prot_vals],
+        fechas    = df_a.get("fecha", pd.Series())
+        fig_prot = go.Figure()
+        fig_prot.add_trace(go.Bar(
+            x=fechas, y=prot_vals,
+            marker_color=["#4CAF50" if (v or 0) >= 150 else "#f44336" for v in prot_vals],
+            name="Proteína (g)",
         ))
-        fig.add_hline(y=150, line_dash="dash", line_color="#FF9800", annotation_text="Target 150g")
-        fig.update_layout(
+        fig_prot.add_hline(y=150, line_dash="dash", line_color="#FF9800", annotation_text="Target 150g")
+        fig_prot.update_layout(
             title="Proteína diaria",
             paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-            font=dict(color="white"), height=280, margin=dict(t=50,b=20),
+            font=dict(color="white"), height=260, margin=dict(t=50,b=20),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_prot, use_container_width=True)
 
-        cols_show = [c for c in ["fecha","desayuno","comida","cena","kcal","prot_g","agua_l","energia"] if c in df_a]
-        st.dataframe(df_a[cols_show].head(7), hide_index=True, use_container_width=True)
+        # Gráfico kcal
+        kcal_vals = pd.to_numeric(df_a.get("kcal", pd.Series()), errors="coerce")
+        if kcal_vals.notna().any():
+            fig_kcal = go.Figure(go.Scatter(
+                x=fechas, y=kcal_vals, mode="lines+markers",
+                line=dict(color="#FF9800", width=2),
+                marker=dict(size=6),
+            ))
+            fig_kcal.add_hline(y=2800, line_dash="dash", line_color="#4CAF50", annotation_text="Target 2800 kcal")
+            fig_kcal.update_layout(
+                title="Calorías diarias",
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                font=dict(color="white"), height=220, margin=dict(t=50,b=20),
+            )
+            st.plotly_chart(fig_kcal, use_container_width=True)
+
+        st.subheader("📋 Registro de comidas")
+        for _, row in df_a.head(14).iterrows():
+            fecha  = row.get("fecha", "—")
+            kcal   = row.get("kcal", "") or ""
+            prot   = row.get("prot_g", "") or ""
+            energia= row.get("energia", "") or ""
+            label  = f"📅 {fecha}"
+            if kcal: label += f"  ·  🔥 {kcal} kcal"
+            if prot: label += f"  ·  💪 {prot}g prot"
+            with st.expander(label + f"  {energia}"):
+                ac1, ac2 = st.columns(2)
+                ac1.write(f"**Desayuno:** {row.get('desayuno','—') or '—'}")
+                ac1.write(f"**Comida:**   {row.get('comida','—') or '—'}")
+                ac1.write(f"**Cena:**     {row.get('cena','—') or '—'}")
+                if row.get("snacks"): ac1.write(f"**Snacks:** {row['snacks']}")
+                ac2.metric("Proteína",   f"{prot}g"  if prot  else "—")
+                ac2.metric("Kcal",       f"{kcal}"   if kcal  else "—")
+                ac2.metric("Carbos",     f"{row.get('carbs_g','') or '—'}g")
+                ac2.metric("Grasas",     f"{row.get('grasas_g','') or '—'}g")
+                ac2.metric("Agua",       f"{row.get('agua_l','') or '—'}L")
     else:
         st.info("Sin datos de nutrición aún.")
 
-# ── TAB 4: Gastos ─────────────────────────────────────────────
-with tab4:
+# ════════════════════════════════════════════════════════════════
+# TAB 5 — GASTOS
+# ════════════════════════════════════════════════════════════════
+with tab5:
     gastos_data = q("gastos", filters={"fecha": f"gte.{MONTH_START}"})
 
     if gastos_data:
@@ -223,9 +387,12 @@ with tab4:
         total   = df_g["importe"].sum()
         por_cat = df_g.groupby("categoria")["importe"].sum().reset_index().sort_values("importe", ascending=False)
 
-        st.metric(f"💶 Total en {MONTH_LABEL}", f"€{total:.2f}")
+        gm1, gm2, gm3 = st.columns(3)
+        gm1.metric(f"💶 Total {MONTH_LABEL}", f"€{total:.2f}")
+        gm2.metric("🛒 Nº transacciones",     len(df_g))
+        gm3.metric("📊 Mayor gasto",           f"€{df_g['importe'].max():.2f}" if len(df_g) else "—")
 
-        col1, col2 = st.columns(2)
+        col1, col2 = st.columns([1, 1])
         with col1:
             fig_pie = go.Figure(go.Pie(
                 labels=por_cat["categoria"], values=por_cat["importe"],
@@ -237,53 +404,77 @@ with tab4:
             )
             st.plotly_chart(fig_pie, use_container_width=True)
         with col2:
-            st.dataframe(por_cat.rename(columns={"categoria":"Categoría","importe":"€"}),
-                         hide_index=True, use_container_width=True)
+            st.dataframe(
+                por_cat.rename(columns={"categoria":"Categoría","importe":"€"}),
+                hide_index=True, use_container_width=True
+            )
 
-        cols_g = [c for c in ["fecha","categoria","concepto","importe"] if c in df_g]
-        st.dataframe(df_g[cols_g].sort_values("fecha", ascending=False).head(10),
-                     hide_index=True, use_container_width=True)
+        st.subheader("📋 Transacciones del mes")
+        cols_g = [c for c in ["fecha","categoria","concepto","importe"] if c in df_g.columns]
+        st.dataframe(
+            df_g[cols_g].sort_values("fecha", ascending=False),
+            hide_index=True, use_container_width=True
+        )
     else:
         st.info("Sin gastos este mes aún.")
 
-# ── TAB 5: Historial ──────────────────────────────────────────
-with tab5:
-    col1, col2 = st.columns(2)
+# ════════════════════════════════════════════════════════════════
+# TAB 6 — DIARIO & IDEAS
+# ════════════════════════════════════════════════════════════════
+with tab6:
+    col_d, col_i = st.columns(2)
 
-    with col1:
-        st.subheader("🏋️ Entrenamientos")
-        dep = q("deporte", order="fecha", desc=True, limit=10)
-        if dep:
-            df_d = pd.DataFrame(dep)
-            st.dataframe(df_d[[c for c in ["fecha","actividad","duracion","sensacion"] if c in df_d]],
-                         hide_index=True, use_container_width=True)
-        else:
-            st.info("Sin entrenamientos aún.")
-
-        st.subheader("📖 Léxico")
-        lex = q("lexico", order="fecha", desc=True, limit=8)
-        if lex:
-            st.dataframe(pd.DataFrame(lex)[["fecha","palabra","definicion"]],
-                         hide_index=True, use_container_width=True)
-        else:
-            st.info("Sin palabras aún.")
-
-    with col2:
-        st.subheader("📖 Diario")
-        diario = q("diario", order="fecha", desc=True, limit=7)
+    with col_d:
+        st.subheader("📖 Diario de vida")
+        diario = q("diario", order="fecha", desc=True, limit=14)
         if diario:
             for e in diario:
-                with st.expander(f"📅 {e.get('fecha','')}"):
-                    if e.get("lo_importante"): st.write(f"⭐ {e['lo_importante']}")
-                    if e.get("gratitud"):      st.write(f"🙏 {e['gratitud']}")
-                    if e.get("mejora"):        st.write(f"📈 {e['mejora']}")
+                fecha = e.get("fecha", "")
+                lo_imp = e.get("lo_importante", "") or ""
+                label  = f"📅 {fecha}"
+                if lo_imp: label += f" — {lo_imp[:50]}{'…' if len(lo_imp)>50 else ''}"
+                with st.expander(label):
+                    if e.get("lo_importante"): st.write(f"⭐ **Lo importante:** {e['lo_importante']}")
+                    if e.get("gratitud"):      st.write(f"🙏 **Gratitud:** {e['gratitud']}")
+                    if e.get("mejora"):        st.write(f"📈 **Mejora:** {e['mejora']}")
+                    if e.get("habitos_ok"):    st.write(f"✅ **Hábitos:** {e['habitos_ok']}")
         else:
             st.info("Sin entradas de diario aún.")
 
+        st.subheader("📚 Léxico")
+        lex = q("lexico", order="fecha", desc=True, limit=20)
+        if lex:
+            for l in lex:
+                with st.expander(f"📖 {l.get('palabra','')} — {l.get('fecha','')}"):
+                    st.write(f"**Definición:** {l.get('definicion','—')}")
+                    if l.get("ejemplo"): st.write(f"**Ejemplo:** _{l['ejemplo']}_")
+        else:
+            st.info("Sin palabras en el léxico aún.")
+
+    with col_i:
         st.subheader("💼 Ideas de negocio")
-        ideas = q("ideas_negocio", order="fecha", desc=True, limit=5)
+        ideas = q("ideas_negocio", order="fecha", desc=True, limit=20)
         if ideas:
             for i in ideas:
-                st.write(f"💡 **{i.get('idea','')}** — {i.get('estado','')}")
+                idea_txt = i.get("idea", "—")
+                label    = f"💡 {idea_txt[:60]}{'…' if len(idea_txt)>60 else ''} — {i.get('fecha','')}"
+                with st.expander(label):
+                    st.write(f"**Idea:** {idea_txt}")
+                    ic1, ic2 = st.columns(2)
+                    ic1.write(f"**Inversión:** {i.get('inversion','—')}")
+                    ic2.write(f"**Tiempo:** {i.get('tiempo_monetizacion','—')}")
+                    st.write(f"**Potencial:** {i.get('potencial','—')}")
+                    estado = i.get("estado", "")
+                    if estado: st.write(f"**Estado:** {estado}")
         else:
-            st.info("Sin ideas aún.")
+            st.info("Sin ideas registradas aún.")
+
+        st.subheader("💬 Refranes")
+        refs = q("refranes", order="fecha", desc=True, limit=15)
+        if refs:
+            for r in refs:
+                with st.expander(f"💬 {r.get('refran','')}"):
+                    st.write(f"**Significado:** {r.get('significado','—')}")
+                    if r.get("contexto"): st.write(f"**Contexto:** {r['contexto']}")
+        else:
+            st.info("Sin refranes aún.")

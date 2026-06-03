@@ -187,7 +187,8 @@ def get_vida_state_summary() -> str:
         alim_r = sb.table("alimentacion").select("id", count="exact").gte("fecha", month_start).execute()
 
         def streak(key):
-            return streaks.get(key, {}).get("current", 0)
+            v = streaks.get(key, 0)
+            return v if isinstance(v, (int, float)) else v.get("current", 0)
 
         return (
             f"MES: {_today()[:7]}\n"
