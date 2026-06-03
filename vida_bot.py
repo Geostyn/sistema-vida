@@ -620,26 +620,43 @@ def transcribe_voice(file_id: str) -> str:
 
 
 # ── Webhook Flask (modo cloud / Render) ───────────────────────
+_processed_msg_ids: set = set()
+
 def _make_flask_app():
+    import threading
     from flask import Flask, request, jsonify
     flask_app = Flask(__name__)
 
     @flask_app.route("/webhook", methods=["POST"])
     def webhook():
-        data = request.get_json(force=True, silent=True) or {}
-        msg  = data.get("message", {})
-        text = msg.get("text", "").strip()
+        data   = request.get_json(force=True, silent=True) or {}
+        msg    = data.get("message", {})
+        msg_id = msg.get("message_id")
 
-        # Soporte de mensajes de voz
-        if not text and msg.get("voice"):
-            send_message("🎤 Transcribiendo tu audio...")
-            text = transcribe_voice(msg["voice"]["file_id"])
-            if not text:
-                send_message("❌ No pude transcribir el audio. Intenta enviarlo como texto.")
+        # Deduplicar: Telegram reenvía si no recibe 200 a tiempo
+        if msg_id:
+            if msg_id in _processed_msg_ids:
+                return jsonify({"ok": True})
+            _processed_msg_ids.add(msg_id)
+            if len(_processed_msg_ids) > 500:
+                _processed_msg_ids.clear()
 
-        if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
-            import threading
-            threading.Thread(target=process_message, args=(text,), daemon=True).start()
+        if str(msg.get("chat", {}).get("id", "")) != CHAT_ID:
+            return jsonify({"ok": True})
+
+        # Procesar TODO en background para devolver 200 inmediatamente
+        def handle():
+            text = msg.get("text", "").strip()
+            if not text and msg.get("voice"):
+                send_message("🎤 Transcribiendo tu audio...")
+                text = transcribe_voice(msg["voice"]["file_id"])
+                if not text:
+                    send_message("❌ No pude transcribir el audio. Intenta enviarlo como texto.")
+                    return
+            if text:
+                process_message(text)
+
+        threading.Thread(target=handle, daemon=True).start()
         return jsonify({"ok": True})
 
     @flask_app.route("/health", methods=["GET"])
