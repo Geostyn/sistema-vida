@@ -171,8 +171,9 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab_macro, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Analisis de Mercado",
+    "🌍 Macro & DXY",
     "🎯 Señales Activas",
     "📰 Noticias",
     "📊 Historial",
@@ -241,6 +242,136 @@ with tab1:
                 font=dict(color="white"), margin=dict(t=20, b=20),
             )
             st.plotly_chart(fig)
+
+
+# ── TAB MACRO & DXY ──────────────────────────────────────────
+with tab_macro:
+    st.subheader("🌍 Macro & DXY — Contexto para XAUUSD")
+
+    # Datos macro del market_state.json (generados cada ciclo)
+    macro_state = state.get("macro", {})
+
+    # ── Métricas rápidas ─────────────────────────────────────
+    m1, m2, m3, m4 = st.columns(4)
+    macro_details = macro_state.get("details", {})
+    dxy_d  = macro_details.get("dxy",       {})
+    tnx_d  = macro_details.get("bonds_10y", {})
+    vix_d  = macro_details.get("vix",       {})
+    spx_d  = macro_details.get("spx",       {})
+
+    dxy_val = dxy_d.get("valor", "--")
+    dxy_chg = dxy_d.get("cambio_6h", 0)
+    dxy_impact = "⬇️ Positivo para ORO" if float(dxy_chg or 0) < 0 else "⬆️ Negativo para ORO"
+    m1.metric("💵 DXY", f"{dxy_val}", f"{float(dxy_chg or 0):+.3f}% 6h — {dxy_impact}")
+
+    tnx_val = tnx_d.get("valor", "--")
+    tnx_chg = tnx_d.get("cambio_6h", 0)
+    m2.metric("📉 Yields 10Y", f"{tnx_val}%", f"{float(tnx_chg or 0):+.4f} — {'↓ Bullish Gold' if float(tnx_chg or 0) < 0 else '↑ Bearish Gold'}")
+
+    vix_now = vix_d.get("valor", "--")
+    vix_avg = vix_d.get("media_20", "--")
+    m3.metric("😱 VIX", f"{vix_now}", f"Media 20: {vix_avg} — {vix_d.get('mood','NEUTRAL')}")
+
+    gold_bias = macro_state.get("gold_bias", "NEUTRAL")
+    bias_color = "🟢" if gold_bias == "BULLISH" else ("🔴" if gold_bias == "BEARISH" else "⚪")
+    m4.metric("🥇 Sesgo Macro Oro", f"{bias_color} {gold_bias}", f"Score: {macro_state.get('score', 0):+.2f}")
+
+    st.divider()
+
+    # ── Gráfico DXY M5 (últimas 8h vía yfinance) ────────────
+    st.subheader("📈 DXY — US Dollar Index (M5, últimas 8h)")
+    st.caption("Fuente: ^DXY (ICE) via yfinance — DXY ↓ = ORO ↑  |  DXY ↑ = ORO ↓")
+
+    @st.cache_data(ttl=300)  # Cache 5 minutos
+    def _load_dxy_chart():
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from data.macro_feed import MacroFeed
+            mf = MacroFeed()
+            return mf.get_dxy_chart_data(interval="5m", period="1d")
+        except Exception:
+            return pd.DataFrame()
+
+    dxy_df = _load_dxy_chart()
+
+    if not dxy_df.empty and "close" in dxy_df.columns:
+        time_col = next((c for c in ["time", "Datetime", "Date", "date"] if c in dxy_df.columns), dxy_df.columns[0])
+        fig_dxy  = go.Figure()
+
+        # Velas (candlestick) si hay OHLC
+        if all(c in dxy_df.columns for c in ["open", "high", "low", "close"]):
+            fig_dxy.add_trace(go.Candlestick(
+                x=dxy_df[time_col],
+                open=dxy_df["open"], high=dxy_df["high"],
+                low=dxy_df["low"],   close=dxy_df["close"],
+                name="DXY",
+                increasing_line_color="#f44336",   # rojo = DXY sube = oro baja
+                decreasing_line_color="#4CAF50",   # verde = DXY baja = oro sube
+            ))
+        else:
+            fig_dxy.add_trace(go.Scatter(
+                x=dxy_df[time_col], y=dxy_df["close"],
+                mode="lines", name="DXY", line=dict(color="#2196F3", width=2),
+            ))
+
+        # EMA20
+        if "ema20" in dxy_df.columns:
+            fig_dxy.add_trace(go.Scatter(
+                x=dxy_df[time_col], y=dxy_df["ema20"],
+                mode="lines", name="EMA20",
+                line=dict(color="#ff9800", width=1.5, dash="dot"),
+            ))
+
+        # Anotación de impacto en el eje derecho
+        last_close = float(dxy_df["close"].iloc[-1])
+        fig_dxy.add_annotation(
+            x=dxy_df[time_col].iloc[-1], y=last_close,
+            text=f"  {last_close:.3f}",
+            showarrow=False, font=dict(color="white", size=12),
+        )
+
+        fig_dxy.update_layout(
+            height=380,
+            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"),
+            xaxis_rangeslider_visible=False,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            margin=dict(t=30, b=30, l=10, r=10),
+            yaxis_title="DXY",
+        )
+        st.plotly_chart(fig_dxy, use_container_width=True)
+        st.caption("🔴 Velas rojas = DXY subiendo (presión bajista sobre ORO)  |  🟢 Velas verdes = DXY bajando (impulso alcista para ORO)")
+    else:
+        st.warning("No se pudo cargar el gráfico DXY. Verifica la conexión a internet.")
+
+    st.divider()
+
+    # ── Régimen de mercado ─────────────────────────────────────
+    regime_state = state.get("symbols", {}).get("XAUUSD", {})
+    st.subheader("📊 Régimen de Mercado — XAUUSD")
+
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.metric("Sesgo Macro",    gold_bias)
+    rc2.metric("DXY Tendencia",  dxy_d.get("ema_trend", "--"))
+    rc3.metric("Modo Risk",      vix_d.get("mood", "NEUTRAL"))
+
+    # Tabla de relaciones clave
+    st.markdown("""
+| Indicador | Valor actual | Impacto en ORO |
+|-----------|-------------|----------------|
+| **DXY ↑** | DXY sube | ❌ Bearish (correlación -0.85) |
+| **DXY ↓** | DXY baja | ✅ Bullish |
+| **Yields ↑** | Bonos suben | ❌ Bearish (coste oportunidad) |
+| **VIX ↑** | Miedo mercado | ✅ Bullish (activo refugio) |
+| **SPX ↓** | Bolsa cae | ✅ Bullish (flight to safety) |
+""")
+
+    # Detalles macro expandibles
+    with st.expander("📋 Ver datos macro detallados"):
+        if macro_details:
+            st.json(macro_details)
+        else:
+            st.info("El sistema necesita estar corriendo (INICIAR.bat) para generar datos macro.")
 
 
 # ── TAB 2: Señales ────────────────────────────────────────────
