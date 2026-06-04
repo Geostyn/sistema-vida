@@ -729,17 +729,22 @@ class TradingSystem:
         risk_summary = self.risk.get_risk_summary(self.db_path)
         market_state["risk"] = risk_summary
 
+        # Modo observación: analiza y manda señales pero NO ejecuta órdenes
+        observation_mode  = False
+        observation_reason = ""
+
         session_ok = self.risk.is_session_allowed()
         if not session_ok["ok"]:
-            logger.info(f"Fuera de horario: {session_ok['reason']}")
-            update_market_state(market_state)
-            return
+            # Fuera de sesión → señales 24h pero sin ejecución MT5
+            observation_mode   = True
+            observation_reason = f"🌙 {session_ok['reason']}"
+            logger.info(f"Fuera de horario — modo observación (señales sin ejecución)")
 
         if not risk_summary.get("within_limits", True):
             dd_type = "semanal" if risk_summary.get("weekly_loss", 0) >= risk_summary.get("weekly_limit", 1e9) else "diario"
-            logger.warning(f"Límite de drawdown {dd_type} alcanzado — análisis suspendido")
-            update_market_state(market_state)
-            return
+            observation_mode   = True
+            observation_reason = f"⛔ Drawdown {dd_type} alcanzado — solo señales, sin ejecución"
+            logger.warning(f"Límite drawdown — modo observación")
 
         # ── Analizar cada símbolo ─────────────────────────────
         active_count = 0
@@ -806,15 +811,23 @@ class TradingSystem:
                     f"R:R:{signal['rr']} | Conf:{signal['confidence']:.0%} | Lotes:{lot}"
                 )
 
-                # Telegram: señal (solo si no hay blackout)
+                # Telegram: señal siempre (modo observación incluido)
+                # Añadir aviso si estamos en modo observación
                 sent = False
+                if observation_mode and observation_reason:
+                    signal["observation_note"] = observation_reason
                 if not signal.get("news_blackout"):
+                    sent = self.telegram.send_signal(signal)
+                elif observation_mode:
+                    # En modo observación mandamos aunque haya blackout (solo aviso)
+                    signal["observation_note"] = observation_reason + " | ⚠️ Precaución: noticia próxima"
                     sent = self.telegram.send_signal(signal)
 
                 # ── Ejecución automática en MT5 ──────────────
+                # Solo si: auto_execute=True Y sin blackout Y NO en modo observación
                 ticket    = None
                 trade_cfg = self.config.get("trading", {})
-                if trade_cfg.get("auto_execute", False) and not signal.get("news_blackout"):
+                if trade_cfg.get("auto_execute", False) and not signal.get("news_blackout") and not observation_mode:
                     # Verificar que AutoTrading está habilitado en MT5
                     term_info = mt5.terminal_info()
                     if term_info and not term_info.trade_allowed:

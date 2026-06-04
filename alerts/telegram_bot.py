@@ -373,6 +373,10 @@ class TelegramBot:
         if news_warn:
             lines += [f"", f"⚠️ <b>Precaución:</b> {news_warn}"]
 
+        obs_note = signal.get("observation_note", "")
+        if obs_note:
+            lines += [f"", f"🔍 <b>MODO OBSERVACIÓN:</b> {obs_note}", f"<i>Esta señal NO se ha ejecutado en MT5</i>"]
+
         lines += [f"", f"─────────────────────────", f"⚠️ No es consejo financiero. Gestiona tu riesgo."]
 
         return "\n".join(lines)
