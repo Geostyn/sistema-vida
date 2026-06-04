@@ -828,7 +828,7 @@ def download_telegram_image(file_id: str) -> bytes:
 
 def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
     """Envía imagen del ticket a Groq Vision y extrae total + items."""
-    import base64
+    import base64, re
     from groq import Groq
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     client = Groq(api_key=GROQ_API_KEY)
@@ -844,22 +844,29 @@ def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
                 {
                     "type": "text",
                     "text": (
-                        "Analiza este ticket o recibo de compra. "
-                        "Devuelve SOLO un JSON válido con esta estructura:\n"
-                        '{"total": 0.0, "concepto": "Supermercado", "items": ['
-                        '{"nombre": "leche", "cantidad": 2, "precio_unitario": 1.20, "total": 2.40}'
+                        "This is a shopping receipt. It may be in any language (Dutch, Spanish, English, etc.).\n"
+                        "Extract the information and return ONLY a valid JSON with this exact structure:\n"
+                        '{"total": 0.0, "concepto": "Supermarkt", "items": ['
+                        '{"nombre": "melk", "cantidad": 2, "precio_unitario": 1.20, "total": 2.40}'
                         "]}\n"
-                        "Si no puedes leer algún campo, usa null. "
-                        "El total debe ser el importe total del ticket. "
-                        "Responde SOLO el JSON, sin texto adicional."
+                        "Rules:\n"
+                        "- 'total' must be the final amount paid (look for TOTAAL, TOTAL, SUMA, etc.)\n"
+                        "- Keep item names in their original language\n"
+                        "- Use null for any field you cannot read\n"
+                        "- If you cannot read items, return an empty list []\n"
+                        "- Return ONLY the JSON, no other text."
                     ),
                 },
             ],
         }],
-        max_tokens=1024,
+        max_tokens=1500,
         temperature=0.1,
     )
-    text = chat.choices[0].message.content.strip()
+    raw = chat.choices[0].message.content.strip()
+    logger.info(f"Groq Vision respuesta: {raw[:200]}")
+
+    # Intentar parsear JSON
+    text = raw
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
@@ -868,7 +875,21 @@ def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
     end = text.rfind("}") + 1
     if start >= 0 and end > start:
         text = text[start:end]
-    return json.loads(text)
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Fallback: extraer solo el total con regex
+        logger.warning(f"JSON inválido del ticket, intentando extraer total con regex")
+        match = re.search(r'"total"\s*:\s*([\d]+\.?[\d]*)', raw)
+        if match:
+            return {"total": float(match.group(1)), "concepto": "Supermarkt", "items": []}
+        # Último fallback: buscar número grande que parezca total
+        numbers = re.findall(r'\b\d+[.,]\d{2}\b', raw)
+        if numbers:
+            amounts = [float(n.replace(",", ".")) for n in numbers]
+            return {"total": max(amounts), "concepto": "Supermarkt", "items": []}
+        raise ValueError(f"No se pudo extraer el total del ticket")
 
 
 def process_group_text_expense(text: str, sender_name: str) -> dict | None:
