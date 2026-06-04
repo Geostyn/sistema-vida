@@ -847,11 +847,12 @@ def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
                         "This is a shopping receipt. It may be in any language (Dutch, Spanish, English, etc.).\n"
                         "Extract the information and return ONLY a valid JSON with this exact structure:\n"
                         '{"total": 0.0, "concepto": "Supermarkt", "items": ['
-                        '{"nombre": "melk", "cantidad": 2, "precio_unitario": 1.20, "total": 2.40}'
+                        '{"nombre": "melk", "traduccion": "leche", "cantidad": 2, "precio_unitario": 1.20, "total": 2.40}'
                         "]}\n"
                         "Rules:\n"
-                        "- 'total' must be the final amount paid (look for TOTAAL, TOTAL, SUMA, etc.)\n"
-                        "- Keep item names in their original language\n"
+                        "- 'total' must be the final amount paid (look for TOTAAL, TOTAL, SUMA, BEDRAG, etc.)\n"
+                        "- 'nombre' = item name in its ORIGINAL language as printed on the receipt\n"
+                        "- 'traduccion' = Spanish translation of the item name\n"
                         "- Use null for any field you cannot read\n"
                         "- If you cannot read items, return an empty list []\n"
                         "- Return ONLY the JSON, no other text."

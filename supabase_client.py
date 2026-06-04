@@ -223,12 +223,13 @@ def insert_gasto_familia(miembro: str, concepto: str, importe: float, categoria:
 
 
 def insert_items_compra(items: list) -> bool:
-    """Inserta lista de items extraídos de un ticket. items = [{"nombre","cantidad","precio_unitario","total"}]"""
+    """Inserta lista de items extraídos de un ticket. items = [{"nombre","traduccion","cantidad","precio_unitario","total"}]"""
     try:
         rows = [
             {
                 "fecha": _today(),
                 "item_nombre": it.get("nombre", it.get("item_nombre", "")),
+                "item_traduccion": it.get("traduccion", it.get("item_traduccion", "")),
                 "cantidad": _num(it.get("cantidad")),
                 "precio_unitario": _num(it.get("precio_unitario")),
                 "total": _num(it.get("total")),

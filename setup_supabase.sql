@@ -159,6 +159,9 @@ create table if not exists items_compra (
 );
 alter table items_compra disable row level security;
 
+-- Añadir traducción a items_compra (ejecutar si la tabla ya existe)
+alter table items_compra add column if not exists item_traduccion text;
+
 -- ✅ Verificación: debería mostrar 12 tablas
 select table_name from information_schema.tables
 where table_schema = 'public'

@@ -577,27 +577,45 @@ with tab7:
             st.subheader("🛒 Top items más comprados")
             if ic_data:
                 df_ic = pd.DataFrame(ic_data)
-                df_ic["total"]      = pd.to_numeric(df_ic["total"], errors="coerce").fillna(0)
-                df_ic["item_nombre"]= df_ic["item_nombre"].str.strip().str.title()
+                df_ic["total"] = pd.to_numeric(df_ic["total"], errors="coerce").fillna(0)
+                df_ic["item_nombre"] = df_ic["item_nombre"].str.strip().str.title()
+                # Combinar nombre original + traducción para la etiqueta del gráfico
+                if "item_traduccion" in df_ic.columns:
+                    df_ic["etiqueta"] = df_ic.apply(
+                        lambda r: f"{r['item_nombre']} ({r['item_traduccion'].strip().lower()})"
+                        if r.get("item_traduccion") else r["item_nombre"], axis=1
+                    )
+                else:
+                    df_ic["etiqueta"] = df_ic["item_nombre"]
                 top_items = (
-                    df_ic.groupby("item_nombre")["total"]
+                    df_ic.groupby("etiqueta")["total"]
                     .sum().reset_index()
                     .sort_values("total", ascending=True)
                     .tail(10)
                 )
                 fig_items = go.Figure(go.Bar(
-                    x=top_items["total"], y=top_items["item_nombre"],
+                    x=top_items["total"], y=top_items["etiqueta"],
                     orientation="h", marker_color="#2196F3",
                     text=[f"€{v:.2f}" for v in top_items["total"]],
                     textposition="outside",
                 ))
                 fig_items.update_layout(
-                    title="Top 10 por gasto (€)",
+                    title="Top 10 por gasto — nombre original (traducción)",
                     paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                    font=dict(color="white"), height=320,
-                    margin=dict(t=40,b=10,l=10,r=60),
+                    font=dict(color="white"), height=340,
+                    margin=dict(t=40,b=10,l=10,r=70),
                 )
                 st.plotly_chart(fig_items, use_container_width=True)
+
+                # Tabla completa con nombre original + traducción
+                st.subheader("📋 Todos los productos")
+                cols_show = ["etiqueta", "total"]
+                tabla_items = df_ic.groupby("etiqueta").agg(
+                    total=("total", "sum"),
+                    veces=("total", "count")
+                ).reset_index().sort_values("total", ascending=False)
+                tabla_items.columns = ["Producto (original / traducción)", "€ total", "Veces comprado"]
+                st.dataframe(tabla_items, hide_index=True, use_container_width=True)
             else:
                 st.caption("Aún no hay tickets escaneados este mes.")
 
