@@ -1023,8 +1023,12 @@ def process_group_expense(msg: dict):
                 chat_id=chat_id,
             )
         except Exception as e:
-            logger.error(f"Error procesando ticket: {e}")
-            send_message("❌ No pude leer el ticket. Intenta con mejor iluminación o envía el importe manualmente.", chat_id=chat_id)
+            logger.error(f"Error procesando ticket: {e}", exc_info=True)
+            send_message(
+                f"❌ <b>Error leyendo ticket:</b>\n<code>{type(e).__name__}: {str(e)[:300]}</code>\n\n"
+                f"Envía el importe manualmente: <code>lidl 127.70</code>",
+                chat_id=chat_id,
+            )
         return
 
     # Mensaje de texto con gasto
