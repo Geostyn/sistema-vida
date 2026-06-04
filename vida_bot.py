@@ -855,23 +855,40 @@ def process_receipt_with_groq_vision(img_url: str) -> dict:
     client = Groq(api_key=GROQ_API_KEY)
     image_content = {"type": "image_url", "image_url": {"url": img_url}}
 
-    # Paso 1: solo el total
+    # Paso 1: total + fecha
     chat_total = client.chat.completions.create(
         model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[{"role": "user", "content": [
             image_content,
             {"type": "text", "text": (
-                "Look at this receipt. Find the TOTAL amount to pay "
-                "(TOTAAL, TOTAL, Te betalen, SUMA, MONTANT).\n"
-                "Reply with ONLY the number. Example: 127.70"
+                "Look at this receipt. Extract:\n"
+                "1. TOTAL amount to pay (TOTAAL, TOTAL, Te betalen, SUMA, MONTANT)\n"
+                "2. DATE of purchase (any date format on the receipt)\n"
+                "Reply in exactly this format:\n"
+                "TOTAL: 127.70\n"
+                "DATE: 2026-05-13"
             )},
         ]}],
-        max_tokens=20, temperature=0.0,
+        max_tokens=40, temperature=0.0,
     )
     raw_total = chat_total.choices[0].message.content.strip()
-    logger.info(f"Vision total: {raw_total!r}")
+    logger.info(f"Vision total+fecha: {raw_total!r}")
     m = re.search(r'\d+[.,]\d{2}', raw_total)
     total = float(m.group(0).replace(",", ".")) if m else 0.0
+
+    # Extraer fecha del ticket
+    from datetime import date as _date
+    fecha_ticket = _date.today().isoformat()
+    dm = re.search(r'DATE:\s*(\d{4}-\d{2}-\d{2})', raw_total)
+    if not dm:
+        # Intentar otros formatos: DD-MM-YYYY, DD/MM/YYYY
+        dm2 = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})', raw_total)
+        if dm2:
+            d, mo, y = dm2.group(1), dm2.group(2), dm2.group(3)
+            fecha_ticket = f"{y}-{int(mo):02d}-{int(d):02d}"
+    else:
+        fecha_ticket = dm.group(1)
+    logger.info(f"Fecha ticket: {fecha_ticket}")
 
     # Paso 2: lista de items
     items = []
@@ -925,7 +942,7 @@ def process_receipt_with_groq_vision(img_url: str) -> dict:
     if total == 0.0 and not items:
         raise ValueError(f"No se pudo leer el ticket. Modelo respondió: {raw_total!r}")
 
-    return {"total": total, "concepto": "Supermarkt", "items": items}
+    return {"total": total, "concepto": "Supermarkt", "fecha": fecha_ticket, "items": items}
 
 
 def process_group_text_expense(text: str, sender_name: str) -> dict | None:
@@ -998,12 +1015,13 @@ def process_group_expense(msg: dict):
             total = float(receipt.get("total") or 0)
             concepto = receipt.get("concepto") or "Supermercado"
             items = receipt.get("items") or []
+            fecha_ticket = receipt.get("fecha") or datetime.now().date().isoformat()
 
             if IS_CLOUD:
                 import supabase_client as sb
-                sb.insert_gasto_familia(sender_name, concepto, total, "Comida", "foto")
+                sb.insert_gasto_familia(sender_name, concepto, total, "Comida", "foto", fecha=fecha_ticket)
                 if items:
-                    sb.insert_items_compra(items)
+                    sb.insert_items_compra(items, fecha=fecha_ticket)
                 resumen_mes = sb.get_gastos_familia_mes()
                 total_mes = resumen_mes.get("total", 0)
             else:
@@ -1012,14 +1030,17 @@ def process_group_expense(msg: dict):
             items_text = ""
             for it in items[:8]:
                 nom = it.get("nombre") or it.get("item_nombre") or "—"
+                trad = it.get("traduccion", "")
                 tot = it.get("total") or ""
-                items_text += f"  • {nom}" + (f" — €{tot}" if tot else "") + "\n"
+                etiqueta = f"{nom} ({trad})" if trad else nom
+                items_text += f"  • {etiqueta}" + (f" — €{tot}" if tot else "") + "\n"
 
             send_message(
-                f"✅ <b>Ticket registrado</b> por {sender_name}\n"
+                f"✅ <b>Ticket registrado</b> — {sender_name}\n"
+                f"📅 Fecha: <b>{fecha_ticket}</b>\n"
                 f"💶 Total: <b>€{total:.2f}</b>\n\n"
-                f"<b>Items detectados:</b>\n{items_text or '  (no detectados)'}\n"
-                f"<i>💰 Total gastado en comida este mes: €{total_mes:.2f}</i>",
+                f"<b>Items:</b>\n{items_text or '  (no detectados)'}\n"
+                f"<i>💰 Total mes: €{total_mes:.2f}</i>",
                 chat_id=chat_id,
             )
         except Exception as e:

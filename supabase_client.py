@@ -210,10 +210,10 @@ def get_macros_hoy() -> dict:
 
 # ── Gastos del grupo familiar ────────────────────────────────
 
-def insert_gasto_familia(miembro: str, concepto: str, importe: float, categoria: str, origen: str = "texto") -> bool:
+def insert_gasto_familia(miembro: str, concepto: str, importe: float, categoria: str, origen: str = "texto", fecha: str = None) -> bool:
     try:
         get_client().table("gastos_familia").insert({
-            "fecha": _today(), "miembro": miembro, "concepto": concepto,
+            "fecha": fecha or _today(), "miembro": miembro, "concepto": concepto,
             "importe": float(importe), "categoria": categoria, "origen": origen,
         }).execute()
         return True
@@ -222,12 +222,12 @@ def insert_gasto_familia(miembro: str, concepto: str, importe: float, categoria:
         return False
 
 
-def insert_items_compra(items: list) -> bool:
+def insert_items_compra(items: list, fecha: str = None) -> bool:
     """Inserta lista de items extraídos de un ticket. items = [{"nombre","traduccion","cantidad","precio_unitario","total"}]"""
     try:
         rows = [
             {
-                "fecha": _today(),
+                "fecha": fecha or _today(),
                 "item_nombre": it.get("nombre", it.get("item_nombre", "")),
                 "item_traduccion": it.get("traduccion", it.get("item_traduccion", "")),
                 "cantidad": _num(it.get("cantidad")),
