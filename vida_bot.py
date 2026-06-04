@@ -847,68 +847,76 @@ def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
     """Envía imagen del ticket a Groq Vision y extrae total + items."""
     import base64, re
     from groq import Groq
-    image_bytes = _resize_image(image_bytes)
+    image_bytes = _resize_image(image_bytes, max_px=1200)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     client = Groq(api_key=GROQ_API_KEY)
-    chat = client.chat.completions.create(
-        model="llama-3.2-90b-vision-preview",
+
+    # Paso 1: pedir SOLO el total (más fiable con modelos pequeños)
+    chat_total = client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
         messages=[{
             "role": "user",
             "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "This is a shopping receipt. It may be in any language (Dutch, Spanish, English, etc.).\n"
-                        "Extract the information and return ONLY a valid JSON with this exact structure:\n"
-                        '{"total": 0.0, "concepto": "Supermarkt", "items": ['
-                        '{"nombre": "melk", "traduccion": "leche", "cantidad": 2, "precio_unitario": 1.20, "total": 2.40}'
-                        "]}\n"
-                        "Rules:\n"
-                        "- 'total' must be the final amount paid (look for TOTAAL, TOTAL, SUMA, BEDRAG, etc.)\n"
-                        "- 'nombre' = item name in its ORIGINAL language as printed on the receipt\n"
-                        "- 'traduccion' = Spanish translation of the item name\n"
-                        "- Use null for any field you cannot read\n"
-                        "- If you cannot read items, return an empty list []\n"
-                        "- Return ONLY the JSON, no other text."
-                    ),
-                },
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": (
+                    "Look at this receipt image. Find the TOTAL amount to pay "
+                    "(look for: TOTAAL, TOTAL, Te betalen, SUMA, SUMME, MONTANT).\n"
+                    "Reply with ONLY a number, example: 127.70\n"
+                    "Nothing else, just the number."
+                )},
             ],
         }],
-        max_tokens=1500,
-        temperature=0.1,
+        max_tokens=20,
+        temperature=0.0,
     )
-    raw = chat.choices[0].message.content.strip()
-    logger.info(f"Groq Vision respuesta: {raw[:200]}")
+    raw_total = chat_total.choices[0].message.content.strip()
+    logger.info(f"Groq Vision total raw: {raw_total!r}")
+    match = re.search(r'[\d]+[.,][\d]{2}', raw_total.replace(",", "."))
+    total = float(match.group(0).replace(",", ".")) if match else 0.0
 
-    # Intentar parsear JSON
-    text = raw
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start >= 0 and end > start:
-        text = text[start:end]
-
+    # Paso 2: pedir lista de items (separado para no saturar el modelo)
+    items = []
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Fallback: extraer solo el total con regex
-        logger.warning(f"JSON inválido del ticket, intentando extraer total con regex")
-        match = re.search(r'"total"\s*:\s*([\d]+\.?[\d]*)', raw)
-        if match:
-            return {"total": float(match.group(1)), "concepto": "Supermarkt", "items": []}
-        # Último fallback: buscar número grande que parezca total
-        numbers = re.findall(r'\b\d+[.,]\d{2}\b', raw)
-        if numbers:
-            amounts = [float(n.replace(",", ".")) for n in numbers]
-            return {"total": max(amounts), "concepto": "Supermarkt", "items": []}
-        raise ValueError(f"No se pudo extraer el total del ticket")
+        chat_items = client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": (
+                        "List all purchased items from this receipt.\n"
+                        "Format: one item per line as: NAME | PRICE\n"
+                        "Keep original language. Example:\n"
+                        "Melk | 1.29\n"
+                        "Brood | 2.15\n"
+                        "Only items with prices, nothing else."
+                    )},
+                ],
+            }],
+            max_tokens=800,
+            temperature=0.1,
+        )
+        raw_items = chat_items.choices[0].message.content.strip()
+        logger.info(f"Groq Vision items raw: {raw_items[:300]!r}")
+
+        # Parsear líneas "NOMBRE | PRECIO"
+        for line in raw_items.splitlines():
+            if "|" in line:
+                parts = line.split("|")
+                nombre = parts[0].strip().title()
+                precio_str = parts[-1].strip()
+                precio_match = re.search(r'[\d]+[.,][\d]{2}', precio_str)
+                if nombre and precio_match:
+                    precio = float(precio_match.group(0).replace(",", "."))
+                    items.append({"nombre": nombre, "traduccion": "", "cantidad": 1,
+                                  "precio_unitario": precio, "total": precio})
+    except Exception as e:
+        logger.warning(f"No se pudieron extraer items: {e}")
+
+    if total == 0.0 and not items:
+        raise ValueError(f"No se pudo leer el ticket. Respuesta del modelo: {raw_total!r}")
+
+    return {"total": total, "concepto": "Supermarkt", "items": items}
 
 
 def process_group_text_expense(text: str, sender_name: str) -> dict | None:
