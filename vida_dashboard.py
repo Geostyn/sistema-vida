@@ -633,7 +633,7 @@ with tab7:
             # Top items de ese mes
             ic_mes = q("items_compra",
                        select="item_nombre,item_traduccion,total",
-                       filters={"fecha": f"gte.{mes_sel}-01", "fecha": f"lte.{mes_sel}-31"})
+                       filters={"fecha": f"like.{mes_sel}%"})
             if ic_mes:
                 df_ic_mes = pd.DataFrame(ic_mes)
                 df_ic_mes["total"] = pd.to_numeric(df_ic_mes["total"], errors="coerce").fillna(0)
