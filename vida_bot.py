@@ -826,14 +826,32 @@ def download_telegram_image(file_id: str) -> bytes:
     return requests.get(img_url, verify=SSL_VERIFY, timeout=30).content
 
 
+def _resize_image(image_bytes: bytes, max_px: int = 1600) -> bytes:
+    """Reduce la imagen a max_px en el lado más largo para optimizar el OCR."""
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+        if max(w, h) > max_px:
+            ratio = max_px / max(w, h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        return buf.getvalue()
+    except Exception:
+        return image_bytes  # si PIL no está disponible, usar original
+
+
 def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
     """Envía imagen del ticket a Groq Vision y extrae total + items."""
     import base64, re
     from groq import Groq
+    image_bytes = _resize_image(image_bytes)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     client = Groq(api_key=GROQ_API_KEY)
     chat = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
+        model="llama-3.2-90b-vision-preview",
         messages=[{
             "role": "user",
             "content": [
