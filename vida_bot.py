@@ -207,29 +207,67 @@ def _macro_progress_msg(perfil: dict) -> str:
     return msg
 
 
+_PORCIONES = [
+    # (nombre_display, prot, carbs, kcal, tiene_lactosa)
+    ("Pechuga de pollo (200g)",    62,  0,  220, False),
+    ("Pechuga de pollo (150g)",    47,  0,  165, False),
+    ("Atún en lata (150g)",        35,  0,  165, False),
+    ("Huevos revueltos (3 uds)",   19,  1,  215, False),
+    ("Queso cottage (200g)",       26,  6,  170,  True),
+    ("Yogur griego 0% (200g)",     20,  8,  120,  True),
+    ("Arroz cocido (200g)",         5, 46,  215, False),
+    ("Arroz cocido (150g)",         4, 35,  165, False),
+    ("Avena cocida (80g seco)",    10, 52,  285, False),
+    ("Plátano (2 piezas)",          3, 54,  230, False),
+    ("Tostadas integrales (2 uds)", 4, 28,  150, False),
+    ("Almendras (30g)",             6,  5,  175, False),
+]
+
+
 def _recomendacion_comida(perfil: dict) -> str:
-    """Genera una recomendación específica de qué comer para completar el día."""
+    """Genera sugerencias de comida con porciones realistas para completar los targets del día."""
     hoy = get_macros_hoy()
-    prot_falta = max(perfil.get("target_prot", 150) - hoy["prot_g"], 0)
-    kcal_falta = max(perfil.get("target_kcal", 2800) - hoy["kcal"], 0)
-    carbs_falta = max(perfil.get("target_carbs", 350) - hoy["carbs_g"], 0)
+    prot_falta  = max(perfil.get("target_prot",  150) - hoy["prot_g"],   0)
+    kcal_falta  = max(perfil.get("target_kcal", 2800) - hoy["kcal"],     0)
+    carbs_falta = max(perfil.get("target_carbs", 350) - hoy["carbs_g"],  0)
     intol = (perfil.get("intolerancias") or "ninguna").lower()
 
     if prot_falta < 10 and kcal_falta < 100:
-        return "\n\n✅ <b>¡Targets alcanzados hoy! Buen trabajo.</b>"
+        return "\n\n✅ <b>¡Targets del día alcanzados! Buen trabajo.</b>"
 
     sugerencias = []
-    if prot_falta >= 20:
-        if "lactosa" not in intol:
-            sugerencias.append(f"• {round(prot_falta/0.25)}g de queso cottage (proteína: ~{round(prot_falta)}g)")
-        sugerencias.append(f"• {round(prot_falta/0.31)}g de pechuga de pollo (proteína: ~{round(prot_falta)}g)")
-    if kcal_falta >= 200 and carbs_falta >= 30:
-        sugerencias.append(f"• {round(carbs_falta/0.28)}g de arroz cocido (~{round(kcal_falta*0.5)}kcal)")
-    if not sugerencias:
-        sugerencias.append(f"• Un snack de ~{round(kcal_falta)}kcal (fruta + frutos secos)")
+    prot_cubierta  = 0
+    kcal_cubierta  = 0
+    carbs_cubiertos = 0
 
-    recs = "\n".join(sugerencias[:3])
-    return f"\n\n🍽️ <b>Para completar el día puedes comer:</b>\n{recs}"
+    for nombre, prot, carbs, kcal, es_lactosa in _PORCIONES:
+        if len(sugerencias) >= 3:
+            break
+        if es_lactosa and "lactosa" in intol:
+            continue
+        util = False
+        if prot_falta > 15 and prot >= 15 and prot_cubierta < prot_falta:
+            util = True
+        if kcal_falta > 150 and carbs >= 20 and carbs_cubiertos < carbs_falta and carbs_falta > 30:
+            util = True
+        if util:
+            sugerencias.append(f"• {nombre} → +{prot}g prot, +{carbs}g carbos, +{kcal} kcal")
+            prot_cubierta  += prot
+            kcal_cubierta  += kcal
+            carbs_cubiertos += carbs
+
+    if not sugerencias:
+        if kcal_falta > 0:
+            sugerencias.append(f"• Un snack de ~{round(kcal_falta)}kcal (fruta + frutos secos)")
+        else:
+            return "\n\n✅ <b>¡Targets del día alcanzados! Buen trabajo.</b>"
+
+    distribuir = ""
+    if prot_falta > 80 or kcal_falta > 900:
+        distribuir = "\n  <i>↳ Distribúyelo en 2 o más comidas</i>"
+
+    recs = "\n".join(sugerencias)
+    return f"\n\n🍽️ <b>Para completar el día:</b>\n{recs}{distribuir}"
 
 
 def _handle_profile_step(text: str) -> bool:
@@ -350,17 +388,17 @@ def read_vida_state() -> str:
 
 
 # ── Groq AI ────────────────────────────────────────────────────
-BASE_SYSTEM_PROMPT = """Eres el asistente personal de vida del usuario. Tu rol es DUAL:
+BASE_SYSTEM_PROMPT = """Eres el equipo de expertos personales del usuario. Tu rol es DUAL:
 1. EXTRACTOR: Extraes información estructurada del mensaje del usuario
-2. EXPERTO: Actúas como especialista en cada área y das consejos proactivos
+2. EXPERTO: Cada especialista responde solo si hay contenido relevante para su área
 
-ÁREAS DE EXPERTISE:
-- 🥗 Nutricionista deportivo: SIEMPRE que el usuario mencione comida, estima los macros de ESA comida concreta (kcal, proteína, carbos, grasas) con los valores más representativos según las cantidades mencionadas. Si no se dan cantidades exactas, estima porciones normales. Rellena "kcal", "prot", "carbs", "grasas" en el JSON con números (solo el número, sin unidades).
-- 💪 Entrenador personal: sugiere progresiones, recuperación, volumen
-- 🙏 Guía espiritual: celebra la conexión con Dios, anima las prácticas espirituales
-- 💰 Asesor financiero: analiza gastos, progreso hacia ahorro
-- 🚀 Business consultant: evalúa ideas, identifica oportunidades
-- 📊 Analista de trading: comenta el rendimiento
+EQUIPO DE EXPERTOS (solo responden si el mensaje toca su área):
+- 🥗 Nutricionista Deportivo: Si el usuario menciona comida o bebida, estima los macros de ESA comida concreta (kcal, proteína, carbos, grasas) con los valores más representativos. Si no hay cantidades exactas, estima porciones normales. Rellena "kcal", "prot", "carbs", "grasas" en el JSON con números. Usa el perfil y el acumulado del día para dar consejos específicos. NUNCA sugiere cantidades irreales (no más de 300g cocido de arroz, no más de 250g de pollo en una sugerencia). Si le falta mucho al target, indica distribuir en varias comidas.
+- 💪 Entrenador Personal: Solo si el usuario menciona entrenamiento, ejercicio o actividad física. Usa sus días de entreno y objetivo para sugerir progresiones o recuperación.
+- 🙏 Guía Espiritual: Solo si el usuario menciona a Dios, fe, oración, gratitud espiritual o prácticas religiosas.
+- 💰 Asesor Financiero: Solo si el usuario menciona gastos, compras, pagos o ingresos.
+- 🚀 Business Consultant: Solo si el usuario menciona ideas de negocio o proyectos.
+- 📊 Analista de Trading: Solo si el usuario menciona trading, mercados o señales.
 
 FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estructura:
 {
@@ -376,34 +414,54 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
     "habitos": {"ducha_fria": false, "te_clavo": false, "oracion": false, "silencio": false},
     "diario": {"lo_importante": "", "gratitud": "", "mejora": "", "habitos_ok": ""}
   },
-  "response": "Tu respuesta en HTML de Telegram. Usa <b>negrita</b> y <i>cursiva</i>. Si mencionas comida, incluye los macros estimados de ESA comida en la respuesta. Máximo 5 oraciones. Siempre incluye 1 consejo de experto. Si el usuario menciona a Dios/fe, celébralo."
+  "responses": {
+    "nutricionista": "Solo si hay comida/nutrición: 2-3 oraciones en HTML Telegram. Habla usando el perfil real del usuario (peso, tipo de cuerpo, lo que ya comió hoy). Tono cercano y directo, como un amigo experto. Deja en blanco si el mensaje no habla de comida.",
+    "entrenador": "",
+    "espiritual": "",
+    "asesor": "",
+    "consultor": "",
+    "analista": ""
+  }
 }
 
 REGLAS IMPORTANTES:
 - Solo incluye campos con datos reales (deja "" los que no apliquen, false los booleans sin datos)
+- En "responses": deja "" en los expertos que no tienen contenido relevante en el mensaje
+- Cada experto habla en primera persona, conoce al usuario por su perfil, menciona datos reales cuando aplica
 - Categorías de GASTO válidas: Comida, Gasolina, Transporte, Ocio, Ropa, Salud, Formación, Ahorro, Hogar, Servicios, Suscripciones, Extra
 - Categorías de INGRESO válidas: Nómina, Freelance, Trading, Extra, Otros
-- "gastos" = dinero que SALE (compras, facturas, pagos). "ingresos" = dinero que ENTRA (sueldo, cobros, transferencias recibidas)
-- Si el usuario menciona que cobró, recibió dinero, nómina, sueldo, ingreso → usa "ingresos", NO "gastos"
-- Cuando haya datos de alimentación, SIEMPRE rellena kcal/prot/carbs/grasas con tu mejor estimación numérica
-- Respuesta cálida, motivadora, como un coach amigo
+- "gastos" = dinero que SALE. "ingresos" = dinero que ENTRA
+- Si el usuario menciona que cobró, recibió dinero, nómina, sueldo → usa "ingresos", NO "gastos"
+- Cuando haya datos de alimentación, SIEMPRE rellena kcal/prot/carbs/grasas con estimación numérica
+- Usa <b>negrita</b> e <i>cursiva</i> en los mensajes HTML
 - Responde siempre en ESPAÑOL"""
 
 
 def build_system_prompt() -> str:
-    """Construye el system prompt con los targets del perfil del usuario."""
+    """Construye el system prompt con el perfil completo del usuario y macros acumulados del día."""
     perfil = load_perfil()
+    macros_hoy = get_macros_hoy()
     if perfil.get("target_kcal"):
-        targets = (
-            f"OBJETIVO DEL USUARIO: Ganar masa muscular\n"
-            f"TARGETS PERSONALIZADOS: {perfil['target_kcal']} kcal/día · "
-            f"{perfil['target_prot']}g proteína · {perfil['target_carbs']}g carbos · "
-            f"{perfil['target_grasas']}g grasas · 3L agua\n"
-            f"TIPO DE CUERPO: {perfil.get('tipo_cuerpo','').capitalize()}"
+        contexto_personal = (
+            f"PERFIL DEL USUARIO:\n"
+            f"  Peso: {perfil.get('peso','?')}kg · Altura: {perfil.get('altura','?')}cm · "
+            f"Edad: {perfil.get('edad','?')} años\n"
+            f"  Tipo de cuerpo: {perfil.get('tipo_cuerpo','').capitalize()} · "
+            f"Entrena: {perfil.get('dias_entreno','?')} días/semana\n"
+            f"  Intolerancias: {perfil.get('intolerancias','ninguna')}\n"
+            f"OBJETIVO: Ganar masa muscular\n"
+            f"TARGETS DIARIOS: {perfil['target_kcal']} kcal · {perfil['target_prot']}g prot · "
+            f"{perfil['target_carbs']}g carbos · {perfil['target_grasas']}g grasas · 3L agua\n"
+            f"HOY ACUMULADO (antes de este mensaje): "
+            f"{macros_hoy['kcal']:.0f} kcal · {macros_hoy['prot_g']:.0f}g prot · "
+            f"{macros_hoy['carbs_g']:.0f}g carbos · {macros_hoy['grasas_g']:.0f}g grasas"
         )
     else:
-        targets = "OBJETIVO DEL USUARIO: Ganar masa muscular (targets aprox: 2800kcal · 150g prot · 350g carbos · 78g grasas · 3L agua)"
-    return targets + "\n\n" + BASE_SYSTEM_PROMPT
+        contexto_personal = (
+            "PERFIL DEL USUARIO: No configurado aún\n"
+            "OBJETIVO: Ganar masa muscular (targets aprox: 2800kcal · 150g prot · 350g carbos · 78g grasas)"
+        )
+    return contexto_personal + "\n\n" + BASE_SYSTEM_PROMPT
 
 
 SYSTEM_PROMPT = BASE_SYSTEM_PROMPT  # compatibilidad — se sobreescribe en call_groq
@@ -424,8 +482,8 @@ def call_groq(user_message: str, vida_state: str) -> dict:
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": context}
             ],
-            max_tokens=1024,
-            temperature=0.3,
+            max_tokens=1500,
+            temperature=0.6,
         )
 
         text = chat.choices[0].message.content.strip()
@@ -783,28 +841,57 @@ def process_message(text: str):
     # Procesar mensaje libre con IA
     send_message("⏳ Analizando tu día...")
 
+    _EXPERT_LABELS = {
+        "nutricionista": "🥗 NUTRICIONISTA DEPORTIVO",
+        "entrenador":    "💪 ENTRENADOR PERSONAL",
+        "espiritual":    "🙏 GUÍA ESPIRITUAL",
+        "asesor":        "💰 ASESOR FINANCIERO",
+        "consultor":     "🚀 BUSINESS CONSULTANT",
+        "analista":      "📊 ANALISTA DE TRADING",
+    }
+
     try:
         vida_state = read_vida_state()
         result     = call_groq(text, vida_state)
         updates    = result.get("updates", {})
-        response   = result.get("response", "✅ Recibido.")
 
         files_updated, xp_messages, alim_guardada = apply_updates(updates)
         last_entry_date = datetime.now().date()
 
-        # Respuesta principal
-        final_reply = response
+        # Confirmación de lo guardado (mensaje breve)
         if files_updated:
-            final_reply += f"\n\n<i>📁 Guardado: {' · '.join(files_updated)}</i>"
+            send_message(f"<i>📁 Guardado: {' · '.join(files_updated)}</i>")
 
-        # Progreso de macros del día + recomendación (solo si se guardó comida y hay perfil)
-        if alim_guardada and IS_CLOUD:
-            perfil = load_perfil()
-            if perfil.get("target_kcal"):
-                final_reply += _macro_progress_msg(perfil)
-                final_reply += _recomendacion_comida(perfil)
+        # Obtener respuestas por experto (con fallback al formato antiguo)
+        expert_responses = result.get("responses", {})
+        if not expert_responses and result.get("response"):
+            expert_responses = {"nutricionista": result["response"]}
 
-        send_message(final_reply)
+        # Enviar un mensaje separado por cada experto con contenido
+        perfil_cache = None
+        for key, label in _EXPERT_LABELS.items():
+            msg = expert_responses.get(key, "")
+            if not isinstance(msg, str):
+                msg = ""
+            msg = msg.strip()
+            if not msg:
+                continue
+
+            expert_msg = f"<b>{label}</b>\n{'─' * 22}\n{msg}"
+
+            # Añadir barras de progreso macros + sugerencias al mensaje del nutricionista
+            if key == "nutricionista" and alim_guardada and IS_CLOUD:
+                if perfil_cache is None:
+                    perfil_cache = load_perfil()
+                if perfil_cache.get("target_kcal"):
+                    expert_msg += _macro_progress_msg(perfil_cache)
+                    expert_msg += _recomendacion_comida(perfil_cache)
+
+            send_message(expert_msg)
+
+        # Si ningún experto respondió y tampoco hubo guardado, enviar acuse mínimo
+        if not any(expert_responses.get(k, "").strip() for k in _EXPERT_LABELS) and not files_updated:
+            send_message("✅ Recibido.")
 
         # Mensajes de XP (si los hay)
         if xp_messages:
