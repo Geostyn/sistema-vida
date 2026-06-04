@@ -814,16 +814,21 @@ def process_message(text: str):
 
 # ── Grupo familiar: gastos y tickets ─────────────────────────
 
-def download_telegram_image(file_id: str) -> bytes:
-    """Descarga una imagen de Telegram y devuelve los bytes."""
+def get_telegram_image_url(file_id: str) -> str:
+    """Devuelve la URL pública de la imagen en Telegram (sin descargar)."""
     r = requests.get(
         f"{TELEGRAM_API}/getFile",
         params={"file_id": file_id},
         verify=SSL_VERIFY, timeout=10,
     )
     file_path = r.json()["result"]["file_path"]
-    img_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-    return requests.get(img_url, verify=SSL_VERIFY, timeout=30).content
+    return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+
+def download_telegram_image(file_id: str) -> bytes:
+    """Descarga una imagen de Telegram y devuelve los bytes."""
+    url = get_telegram_image_url(file_id)
+    return requests.get(url, verify=SSL_VERIFY, timeout=30).content
 
 
 def _resize_image(image_bytes: bytes, max_px: int = 1600) -> bytes:
@@ -843,78 +848,82 @@ def _resize_image(image_bytes: bytes, max_px: int = 1600) -> bytes:
         return image_bytes  # si PIL no está disponible, usar original
 
 
-def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
-    """Envía imagen del ticket a Groq Vision y extrae total + items."""
-    import base64, re
+def process_receipt_with_groq_vision(img_url: str) -> dict:
+    """Envía la URL del ticket a Groq Vision y extrae total + items."""
+    import re
     from groq import Groq
-    image_bytes = _resize_image(image_bytes, max_px=1200)
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
     client = Groq(api_key=GROQ_API_KEY)
+    image_content = {"type": "image_url", "image_url": {"url": img_url}}
 
-    # Paso 1: pedir SOLO el total (más fiable con modelos pequeños)
+    # Paso 1: solo el total
     chat_total = client.chat.completions.create(
         model="llama-3.2-11b-vision-preview",
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                {"type": "text", "text": (
-                    "Look at this receipt image. Find the TOTAL amount to pay "
-                    "(look for: TOTAAL, TOTAL, Te betalen, SUMA, SUMME, MONTANT).\n"
-                    "Reply with ONLY a number, example: 127.70\n"
-                    "Nothing else, just the number."
-                )},
-            ],
-        }],
-        max_tokens=20,
-        temperature=0.0,
+        messages=[{"role": "user", "content": [
+            image_content,
+            {"type": "text", "text": (
+                "Look at this receipt. Find the TOTAL amount to pay "
+                "(TOTAAL, TOTAL, Te betalen, SUMA, MONTANT).\n"
+                "Reply with ONLY the number. Example: 127.70"
+            )},
+        ]}],
+        max_tokens=20, temperature=0.0,
     )
     raw_total = chat_total.choices[0].message.content.strip()
-    logger.info(f"Groq Vision total raw: {raw_total!r}")
-    match = re.search(r'[\d]+[.,][\d]{2}', raw_total.replace(",", "."))
-    total = float(match.group(0).replace(",", ".")) if match else 0.0
+    logger.info(f"Vision total: {raw_total!r}")
+    m = re.search(r'\d+[.,]\d{2}', raw_total)
+    total = float(m.group(0).replace(",", ".")) if m else 0.0
 
-    # Paso 2: pedir lista de items (separado para no saturar el modelo)
+    # Paso 2: lista de items
     items = []
     try:
         chat_items = client.chat.completions.create(
             model="llama-3.2-11b-vision-preview",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": (
-                        "List all purchased items from this receipt.\n"
-                        "Format: one item per line as: NAME | PRICE\n"
-                        "Keep original language. Example:\n"
-                        "Melk | 1.29\n"
-                        "Brood | 2.15\n"
-                        "Only items with prices, nothing else."
-                    )},
-                ],
-            }],
-            max_tokens=800,
-            temperature=0.1,
+            messages=[{"role": "user", "content": [
+                image_content,
+                {"type": "text", "text": (
+                    "List ALL purchased items from this receipt.\n"
+                    "One per line: ORIGINAL_NAME | PRICE\n"
+                    "Keep names in original language. Only lines with prices."
+                )},
+            ]}],
+            max_tokens=1000, temperature=0.1,
         )
         raw_items = chat_items.choices[0].message.content.strip()
-        logger.info(f"Groq Vision items raw: {raw_items[:300]!r}")
-
-        # Parsear líneas "NOMBRE | PRECIO"
+        logger.info(f"Vision items: {raw_items[:200]!r}")
         for line in raw_items.splitlines():
-            if "|" in line:
-                parts = line.split("|")
-                nombre = parts[0].strip().title()
-                precio_str = parts[-1].strip()
-                precio_match = re.search(r'[\d]+[.,][\d]{2}', precio_str)
-                if nombre and precio_match:
-                    precio = float(precio_match.group(0).replace(",", "."))
-                    items.append({"nombre": nombre, "traduccion": "", "cantidad": 1,
-                                  "precio_unitario": precio, "total": precio})
+            if "|" not in line:
+                continue
+            parts = line.split("|")
+            nombre = parts[0].strip().title()
+            pm = re.search(r'\d+[.,]\d{2}', parts[-1])
+            if nombre and pm:
+                precio = float(pm.group(0).replace(",", "."))
+                items.append({"nombre": nombre, "traduccion": "", "cantidad": 1,
+                              "precio_unitario": precio, "total": precio})
     except Exception as e:
-        logger.warning(f"No se pudieron extraer items: {e}")
+        logger.warning(f"Items no extraídos: {e}")
+
+    # Paso 3: traducir items al español (llamada de texto, sin imagen)
+    if items:
+        try:
+            nombres = [it["nombre"] for it in items]
+            chat_trad = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": (
+                    "Translate these product names to Spanish. "
+                    "Reply with ONLY the translations, one per line, same order:\n"
+                    + "\n".join(nombres)
+                )}],
+                max_tokens=500, temperature=0.1,
+            )
+            traducciones = chat_trad.choices[0].message.content.strip().splitlines()
+            for i, trad in enumerate(traducciones[:len(items)]):
+                items[i]["traduccion"] = trad.strip()
+        except Exception as e:
+            logger.warning(f"Traducción fallida: {e}")
 
     if total == 0.0 and not items:
-        raise ValueError(f"No se pudo leer el ticket. Respuesta del modelo: {raw_total!r}")
+        raise ValueError(f"No se pudo leer el ticket. Modelo respondió: {raw_total!r}")
 
     return {"total": total, "concepto": "Supermarkt", "items": items}
 
@@ -983,8 +992,8 @@ def process_group_expense(msg: dict):
                 file_id = photos[-1]["file_id"]
             else:
                 file_id = msg["document"]["file_id"]
-            img_bytes = download_telegram_image(file_id)
-            receipt = process_receipt_with_groq_vision(img_bytes)
+            img_url = get_telegram_image_url(file_id)
+            receipt = process_receipt_with_groq_vision(img_url)
 
             total = float(receipt.get("total") or 0)
             concepto = receipt.get("concepto") or "Supermercado"
