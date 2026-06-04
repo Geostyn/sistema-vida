@@ -857,7 +857,7 @@ def process_receipt_with_groq_vision(img_url: str) -> dict:
 
     # Paso 1: solo el total
     chat_total = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[{"role": "user", "content": [
             image_content,
             {"type": "text", "text": (
@@ -877,7 +877,7 @@ def process_receipt_with_groq_vision(img_url: str) -> dict:
     items = []
     try:
         chat_items = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "user", "content": [
                 image_content,
                 {"type": "text", "text": (
