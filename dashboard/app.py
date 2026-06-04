@@ -171,13 +171,14 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Analisis de Mercado",
     "🎯 Señales Activas",
     "📰 Noticias",
     "📊 Historial",
     "🧪 Backtest",
     "⚔️ Sistema de Vida",
+    "👨‍👩‍👧 Gastos Familia",
 ])
 
 
@@ -569,20 +570,80 @@ with tab6:
 
     st.divider()
 
-    # ── Nutrición (última semana) ──
-    st.subheader("🍽️ Nutrición — últimos registros")
+    # ── Perfil nutricional ──
+    try:
+        _perfil_r = _sb.table("perfil_usuario").select("*").eq("id", 1).execute()
+        _perfil = _perfil_r.data[0] if _perfil_r.data else {}
+    except Exception:
+        _perfil = {}
+
+    _TARGET_KCAL = float(_perfil.get("target_kcal") or 2800)
+    _TARGET_PROT = float(_perfil.get("target_prot") or 150)
+    _TARGET_CARBS = float(_perfil.get("target_carbs") or 350)
+    _TARGET_GRASAS = float(_perfil.get("target_grasas") or 78)
+
+    if _perfil.get("peso"):
+        st.subheader("🎯 Perfil nutricional")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("⚖️ Peso", f"{_perfil.get('peso',0)} kg")
+        p2.metric("📏 Altura", f"{_perfil.get('altura',0)} cm")
+        p3.metric("💪 Tipo", str(_perfil.get("tipo_cuerpo","—")).capitalize())
+        p4.metric("🔥 TDEE", f"{_perfil.get('tdee',0):.0f} kcal")
+        st.divider()
+
+    # ── Progreso de macros de hoy ──
+    try:
+        _hoy_alim = _sb.table("alimentacion").select("kcal,prot_g,carbs_g,grasas_g,agua_l").eq("fecha", _today).execute()
+        _hoy_data = {"kcal": 0.0, "prot_g": 0.0, "carbs_g": 0.0, "grasas_g": 0.0, "agua_l": 0.0}
+        for _row in (_hoy_alim.data or []):
+            for _k in _hoy_data:
+                _hoy_data[_k] += float(_row.get(_k) or 0)
+    except Exception:
+        _hoy_data = {"kcal": 0.0, "prot_g": 0.0, "carbs_g": 0.0, "grasas_g": 0.0, "agua_l": 0.0}
+
+    st.subheader(f"📊 Macros de hoy — {_today}")
+    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+    _mc1.metric("🔥 Kcal", f"{_hoy_data['kcal']:.0f}", f"/{_TARGET_KCAL:.0f} target")
+    _mc2.metric("💪 Proteína", f"{_hoy_data['prot_g']:.0f}g", f"/{_TARGET_PROT:.0f}g target")
+    _mc3.metric("🌾 Carbos", f"{_hoy_data['carbs_g']:.0f}g", f"/{_TARGET_CARBS:.0f}g target")
+    _mc4.metric("🥑 Grasas", f"{_hoy_data['grasas_g']:.0f}g", f"/{_TARGET_GRASAS:.0f}g target")
+
+    _macro_names = ["🔥 Kcal", "💪 Proteína (g)", "🌾 Carbos (g)", "🥑 Grasas (g)"]
+    _macro_actual = [_hoy_data["kcal"], _hoy_data["prot_g"], _hoy_data["carbs_g"], _hoy_data["grasas_g"]]
+    _macro_target = [_TARGET_KCAL, _TARGET_PROT, _TARGET_CARBS, _TARGET_GRASAS]
+    _macro_pct = [min(a / t * 100, 100) if t else 0 for a, t in zip(_macro_actual, _macro_target)]
+
+    fig_macros = go.Figure()
+    fig_macros.add_trace(go.Bar(
+        name="Consumido", x=_macro_names, y=_macro_actual,
+        marker_color=["#4CAF50" if p >= 90 else "#ff9800" if p >= 60 else "#f44336" for p in _macro_pct],
+        text=[f"{p:.0f}%" for p in _macro_pct], textposition="outside",
+    ))
+    fig_macros.add_trace(go.Bar(
+        name="Target", x=_macro_names, y=_macro_target,
+        marker_color="rgba(255,255,255,0.15)",
+    ))
+    fig_macros.update_layout(
+        barmode="overlay", title="Progreso macros de hoy vs targets personalizados",
+        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        font=dict(color="white"), height=280, margin=dict(t=40, b=20),
+    )
+    st.plotly_chart(fig_macros, use_container_width=True)
+
+    # ── Nutrición última semana ──
+    st.subheader("🍽️ Nutrición — últimos 7 registros")
     if _alim_r.data:
         _alim_df = pd.DataFrame(_alim_r.data).head(7)
-        _TARGET_PROT = 150
-        _TARGET_KCAL = 2800
         fig_nut = go.Figure()
         if "prot_g" in _alim_df.columns:
             fig_nut.add_trace(go.Bar(name="Proteína (g)", x=_alim_df["fecha"], y=_alim_df["prot_g"], marker_color="#4CAF50"))
-            fig_nut.add_hline(y=_TARGET_PROT, line_dash="dash", line_color="#ff9800", annotation_text=f"Target {_TARGET_PROT}g")
+            fig_nut.add_hline(y=_TARGET_PROT, line_dash="dash", line_color="#ff9800", annotation_text=f"Target {_TARGET_PROT:.0f}g")
+        if "kcal" in _alim_df.columns:
+            fig_nut.add_trace(go.Scatter(name="Kcal/10", x=_alim_df["fecha"], y=_alim_df["kcal"] / 10, mode="lines+markers", line=dict(color="#2196F3")))
         fig_nut.update_layout(
-            title="Proteína diaria vs target (150g)",
+            title="Proteína diaria vs target (últimos 7 días)",
             paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-            font=dict(color="white"), height=260, margin=dict(t=40,b=20),
+            font=dict(color="white"), height=260, margin=dict(t=40, b=20),
         )
         st.plotly_chart(fig_nut, use_container_width=True)
     else:
@@ -608,6 +669,132 @@ with tab6:
         st.plotly_chart(fig_g, use_container_width=True)
     else:
         st.caption("Sin gastos registrados este mes aún.")
+
+# ── TAB 7: Gastos Familia ─────────────────────────────────────
+with tab7:
+    _sb_url = os.environ.get("SUPABASE_URL", "")
+    _sb_key = os.environ.get("SUPABASE_KEY", "")
+
+    if not _sb_url or not _sb_key:
+        st.info("Configura SUPABASE_URL y SUPABASE_KEY para ver los gastos familiares.")
+        st.stop()
+
+    try:
+        from supabase import create_client as _sb7_create
+        _sb7 = _sb7_create(_sb_url, _sb_key)
+    except Exception as _e7:
+        st.error(f"Error conectando Supabase: {_e7}")
+        st.stop()
+
+    from datetime import date as _date7
+    _today7 = _date7.today().isoformat()
+    _month7 = _today7[:8] + "01"
+
+    st.subheader("👨‍👩‍👧 Gastos Familiares — Supermercado")
+
+    # ── Datos del mes ──
+    try:
+        _gf_r = _sb7.table("gastos_familia").select("*").gte("fecha", _month7).order("fecha", desc=True).execute()
+        _ic_r = _sb7.table("items_compra").select("item_nombre,total").gte("fecha", _month7).execute()
+    except Exception as _e7b:
+        st.error(f"Error cargando datos: {_e7b}")
+        st.stop()
+
+    _gf_data = _gf_r.data or []
+    _ic_data = _ic_r.data or []
+
+    # ── Métricas ──
+    _total_mes = sum(float(r.get("importe", 0)) for r in _gf_data)
+    _n_compras = len([r for r in _gf_data if r.get("origen") == "foto"])
+    _n_registros = len(_gf_data)
+
+    _fm1, _fm2, _fm3 = st.columns(3)
+    _fm1.metric("💶 Total gastado este mes", f"€{_total_mes:.2f}")
+    _fm2.metric("🧾 Tickets escaneados", _n_compras)
+    _fm3.metric("📝 Registros totales", _n_registros)
+
+    st.divider()
+
+    if _gf_data:
+        _gf_df = pd.DataFrame(_gf_data)
+
+        col_izq, col_der = st.columns(2)
+
+        # ── Gráfico: Desglose por categoría ──
+        with col_izq:
+            st.subheader("📊 Gasto por categoría")
+            _por_cat = _gf_df.groupby("categoria")["importe"].sum().reset_index()
+            fig_cat = go.Figure(go.Pie(
+                labels=_por_cat["categoria"],
+                values=_por_cat["importe"],
+                hole=0.4,
+                textinfo="label+percent+value",
+                texttemplate="%{label}<br>%{percent}<br>€%{value:.2f}",
+            ))
+            fig_cat.update_layout(
+                title=f"Total: €{_total_mes:.2f}",
+                paper_bgcolor="#0e1117", font=dict(color="white"),
+                height=350, margin=dict(t=40, b=10),
+            )
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+        # ── Gráfico: Top items comprados ──
+        with col_der:
+            st.subheader("🛒 Top items más comprados")
+            if _ic_data:
+                _ic_df = pd.DataFrame(_ic_data)
+                _ic_df["item_nombre"] = _ic_df["item_nombre"].str.strip().str.title()
+                _top_items = (
+                    _ic_df.groupby("item_nombre")["total"]
+                    .sum()
+                    .reset_index()
+                    .sort_values("total", ascending=True)
+                    .tail(10)
+                )
+                fig_items = go.Figure(go.Bar(
+                    x=_top_items["total"],
+                    y=_top_items["item_nombre"],
+                    orientation="h",
+                    marker_color="#2196F3",
+                    text=[f"€{v:.2f}" for v in _top_items["total"]],
+                    textposition="outside",
+                ))
+                fig_items.update_layout(
+                    title="Top 10 por gasto total (€)",
+                    paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                    font=dict(color="white"), height=350,
+                    margin=dict(t=40, b=10, l=10, r=60),
+                    xaxis_title="€ gastados",
+                )
+                st.plotly_chart(fig_items, use_container_width=True)
+            else:
+                st.caption("Aún no hay items de tickets escaneados este mes.")
+
+        st.divider()
+
+        # ── Evolución diaria del gasto ──
+        st.subheader("📈 Gasto acumulado por día")
+        _gf_df["fecha"] = pd.to_datetime(_gf_df["fecha"])
+        _daily = _gf_df.groupby("fecha")["importe"].sum().reset_index()
+        _daily["acumulado"] = _daily["importe"].cumsum()
+        fig_evo = go.Figure()
+        fig_evo.add_trace(go.Bar(name="Gasto del día", x=_daily["fecha"], y=_daily["importe"], marker_color="#ff9800"))
+        fig_evo.add_trace(go.Scatter(name="Acumulado", x=_daily["fecha"], y=_daily["acumulado"], mode="lines+markers", line=dict(color="#4CAF50", width=2)))
+        fig_evo.update_layout(
+            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"), height=280, margin=dict(t=20, b=20),
+        )
+        st.plotly_chart(fig_evo, use_container_width=True)
+
+        st.divider()
+
+        # ── Historial de compras ──
+        st.subheader("📋 Historial de compras")
+        _hist_cols = [c for c in ["fecha", "miembro", "concepto", "importe", "categoria", "origen"] if c in _gf_df.columns]
+        _gf_df["fecha"] = _gf_df["fecha"].dt.strftime("%Y-%m-%d")
+        st.dataframe(_gf_df[_hist_cols].rename(columns={"fecha": "Fecha", "miembro": "Quién", "concepto": "Qué", "importe": "€", "categoria": "Categoría", "origen": "Tipo"}), hide_index=True, use_container_width=True)
+    else:
+        st.info("No hay gastos familiares registrados este mes. Añade el bot al grupo de Telegram y empieza a registrar compras.")
 
 st.divider()
 st.caption("Este sistema es una herramienta de analisis. No garantiza ganancias. Opera siempre con gestion de riesgo.")

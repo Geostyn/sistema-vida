@@ -115,7 +115,51 @@ create table if not exists ideas_negocio (
 );
 alter table ideas_negocio disable row level security;
 
--- ✅ Verificación: debería mostrar 9 tablas
+-- 10. Perfil nutricional del usuario
+create table if not exists perfil_usuario (
+  id integer primary key default 1,
+  peso numeric,
+  altura numeric,
+  edad integer,
+  tipo_cuerpo text,
+  dias_entreno integer,
+  intolerancias text,
+  tdee numeric,
+  target_kcal numeric,
+  target_prot numeric,
+  target_carbs numeric,
+  target_grasas numeric,
+  updated_at date default current_date
+);
+insert into perfil_usuario (id) values (1) on conflict (id) do nothing;
+alter table perfil_usuario disable row level security;
+
+-- 11. Gastos del grupo familiar
+create table if not exists gastos_familia (
+  id bigserial primary key,
+  fecha date not null default current_date,
+  miembro text,
+  concepto text,
+  importe numeric not null,
+  categoria text,
+  origen text default 'texto',
+  created_at timestamptz default now()
+);
+alter table gastos_familia disable row level security;
+
+-- 12. Items de compra (extraídos de tickets/recibos)
+create table if not exists items_compra (
+  id bigserial primary key,
+  fecha date not null default current_date,
+  item_nombre text not null,
+  cantidad numeric,
+  precio_unitario numeric,
+  total numeric,
+  created_at timestamptz default now()
+);
+alter table items_compra disable row level security;
+
+-- ✅ Verificación: debería mostrar 12 tablas
 select table_name from information_schema.tables
 where table_schema = 'public'
 order by table_name;

@@ -92,10 +92,209 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 IS_CLOUD     = bool(SUPABASE_URL and SUPABASE_KEY)
 
 APP_URL        = os.environ.get("APP_URL", "")   # ej: https://sistema-vida-bot.onrender.com
+GRUPO_FAMILIA_CHAT_ID = str(
+    os.environ.get("GRUPO_FAMILIA_CHAT_ID") or
+    cfg.get("vida_bot", {}).get("grupo_familia_chat_id", "")
+)
 SSL_VERIFY     = False
 TELEGRAM_API   = f"https://api.telegram.org/bot{BOT_TOKEN}"
 last_update_id = 0
 last_entry_date = None
+
+# ── Perfil nutricional ─────────────────────────────────────────
+PROFILE_STEPS = [
+    {"key": "peso",        "pregunta": "⚖️ <b>¿Cuánto pesas en kg?</b>\nEj: 75"},
+    {"key": "altura",      "pregunta": "📏 <b>¿Cuánto mides en cm?</b>\nEj: 178"},
+    {"key": "edad",        "pregunta": "🎂 <b>¿Cuántos años tienes?</b>"},
+    {"key": "tipo_cuerpo", "pregunta": "💪 <b>¿Cuál es tu tipo de cuerpo?</b>\nResponde: <code>ectomorfo</code>, <code>mesomorfo</code> o <code>endomorfo</code>"},
+    {"key": "dias_entreno","pregunta": "🏋️ <b>¿Cuántos días por semana entrenas?</b>\nResponde un número del 0 al 7"},
+    {"key": "intolerancias","pregunta": "🥗 <b>¿Tienes alguna intolerancia alimentaria?</b>\nEj: lactosa, gluten, ninguna"},
+]
+
+_profile_conv: dict = {}
+_perfil_cache: dict = {}
+
+ACTIVITY_FACTORS = {0: 1.2, 1: 1.375, 2: 1.375, 3: 1.55, 4: 1.55, 5: 1.725, 6: 1.725, 7: 1.9}
+PERFIL_FILE = os.path.join(SCRIPT_DIR, "perfil_usuario.json")
+
+
+def _calc_targets(peso: float, altura: float, edad: int, tipo_cuerpo: str, dias: int) -> dict:
+    """Calcula BMR → TDEE → macros para ganancia muscular."""
+    bmr = (10 * peso) + (6.25 * altura) - (5 * edad) + 5
+    factor = ACTIVITY_FACTORS.get(min(dias, 7), 1.55)
+    tdee = bmr * factor
+    surplus = 500 if tipo_cuerpo == "ectomorfo" else 400
+    target_kcal = round(tdee + surplus)
+    prot_mult = 2.4 if tipo_cuerpo == "ectomorfo" else 2.2
+    target_prot = round(peso * prot_mult)
+    target_grasas = round(target_kcal * 0.25 / 9)
+    target_carbs = round((target_kcal - target_prot * 4 - target_grasas * 9) / 4)
+    return {
+        "tdee": round(tdee),
+        "target_kcal": target_kcal,
+        "target_prot": target_prot,
+        "target_carbs": target_carbs,
+        "target_grasas": target_grasas,
+    }
+
+
+def load_perfil() -> dict:
+    global _perfil_cache
+    if _perfil_cache:
+        return _perfil_cache
+    if IS_CLOUD:
+        try:
+            import supabase_client as sb
+            _perfil_cache = sb.get_perfil()
+            return _perfil_cache
+        except Exception:
+            pass
+    try:
+        with open(PERFIL_FILE, "r", encoding="utf-8") as f:
+            _perfil_cache = json.load(f)
+        return _perfil_cache
+    except FileNotFoundError:
+        return {}
+
+
+def save_perfil_local(data: dict):
+    global _perfil_cache
+    _perfil_cache = data
+    with open(PERFIL_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    if IS_CLOUD:
+        try:
+            import supabase_client as sb
+            sb.save_perfil(data)
+        except Exception:
+            pass
+
+
+def get_macros_hoy() -> dict:
+    if IS_CLOUD:
+        try:
+            import supabase_client as sb
+            return sb.get_macros_hoy()
+        except Exception:
+            pass
+    return {"kcal": 0, "prot_g": 0, "carbs_g": 0, "grasas_g": 0, "agua_l": 0}
+
+
+def _macro_progress_msg(perfil: dict) -> str:
+    """Genera mensaje de progreso de macros del día vs targets del perfil."""
+    hoy = get_macros_hoy()
+    tk = perfil.get("target_kcal", 2800)
+    tp = perfil.get("target_prot", 150)
+    tc = perfil.get("target_carbs", 350)
+    tg = perfil.get("target_grasas", 78)
+
+    def barra(actual, target):
+        pct = min(actual / target, 1.0) if target else 0
+        filled = int(pct * 8)
+        return "█" * filled + "░" * (8 - filled)
+
+    kcal_r = hoy["kcal"]; prot_r = hoy["prot_g"]
+    carbs_r = hoy["carbs_g"]; grasas_r = hoy["grasas_g"]
+
+    msg = (
+        "\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>PROGRESO DEL DÍA</b>\n"
+        f"🔥 Kcal:  {kcal_r:.0f}/{tk} [{barra(kcal_r,tk)}] faltan {max(tk-kcal_r,0):.0f}\n"
+        f"💪 Prot:  {prot_r:.0f}/{tp}g [{barra(prot_r,tp)}] faltan {max(tp-prot_r,0):.0f}g\n"
+        f"🌾 Carbs: {carbs_r:.0f}/{tc}g [{barra(carbs_r,tc)}] faltan {max(tc-carbs_r,0):.0f}g\n"
+        f"🥑 Grasas:{grasas_r:.0f}/{tg}g [{barra(grasas_r,tg)}] faltan {max(tg-grasas_r,0):.0f}g"
+    )
+    return msg
+
+
+def _recomendacion_comida(perfil: dict) -> str:
+    """Genera una recomendación específica de qué comer para completar el día."""
+    hoy = get_macros_hoy()
+    prot_falta = max(perfil.get("target_prot", 150) - hoy["prot_g"], 0)
+    kcal_falta = max(perfil.get("target_kcal", 2800) - hoy["kcal"], 0)
+    carbs_falta = max(perfil.get("target_carbs", 350) - hoy["carbs_g"], 0)
+    intol = (perfil.get("intolerancias") or "ninguna").lower()
+
+    if prot_falta < 10 and kcal_falta < 100:
+        return "\n\n✅ <b>¡Targets alcanzados hoy! Buen trabajo.</b>"
+
+    sugerencias = []
+    if prot_falta >= 20:
+        if "lactosa" not in intol:
+            sugerencias.append(f"• {round(prot_falta/0.25)}g de queso cottage (proteína: ~{round(prot_falta)}g)")
+        sugerencias.append(f"• {round(prot_falta/0.31)}g de pechuga de pollo (proteína: ~{round(prot_falta)}g)")
+    if kcal_falta >= 200 and carbs_falta >= 30:
+        sugerencias.append(f"• {round(carbs_falta/0.28)}g de arroz cocido (~{round(kcal_falta*0.5)}kcal)")
+    if not sugerencias:
+        sugerencias.append(f"• Un snack de ~{round(kcal_falta)}kcal (fruta + frutos secos)")
+
+    recs = "\n".join(sugerencias[:3])
+    return f"\n\n🍽️ <b>Para completar el día puedes comer:</b>\n{recs}"
+
+
+def _handle_profile_step(text: str) -> bool:
+    """Gestiona el flujo conversacional del perfil. Devuelve True si procesó el mensaje."""
+    if not _profile_conv:
+        return False
+
+    step_idx = _profile_conv.get("step", 0)
+    if step_idx >= len(PROFILE_STEPS):
+        return False
+
+    field = PROFILE_STEPS[step_idx]["key"]
+    val = text.strip()
+
+    # Validación básica
+    if field in ("peso", "altura", "edad", "dias_entreno"):
+        try:
+            val = float(val.replace(",", ".").replace("kg", "").replace("cm", "").strip())
+            if field == "edad":
+                val = int(val)
+            elif field == "dias_entreno":
+                val = max(0, min(7, int(val)))
+        except ValueError:
+            send_message(f"⚠️ Necesito un número. {PROFILE_STEPS[step_idx]['pregunta']}")
+            return True
+
+    if field == "tipo_cuerpo":
+        val = val.lower()
+        if val not in ("ectomorfo", "mesomorfo", "endomorfo"):
+            send_message("⚠️ Responde <code>ectomorfo</code>, <code>mesomorfo</code> o <code>endomorfo</code>")
+            return True
+
+    _profile_conv["data"][field] = val
+    _profile_conv["step"] = step_idx + 1
+
+    if _profile_conv["step"] < len(PROFILE_STEPS):
+        send_message(PROFILE_STEPS[_profile_conv["step"]]["pregunta"])
+        return True
+
+    # Perfil completo — calcular y guardar
+    d = _profile_conv["data"]
+    targets = _calc_targets(
+        float(d["peso"]), float(d["altura"]), int(d["edad"]),
+        d["tipo_cuerpo"], int(d["dias_entreno"])
+    )
+    perfil = {**d, **targets}
+    save_perfil_local(perfil)
+    _profile_conv.clear()
+
+    tipo = d["tipo_cuerpo"].capitalize()
+    send_message(
+        f"✅ <b>Perfil guardado!</b> 🎯\n\n"
+        f"📋 <b>Tu perfil:</b>\n"
+        f"  ⚖️ {d['peso']} kg · 📏 {d['altura']} cm · 🎂 {d['edad']} años\n"
+        f"  💪 {tipo} · 🏋️ {d['dias_entreno']} días/semana\n\n"
+        f"🎯 <b>Tus targets personalizados (ganancia muscular):</b>\n"
+        f"  🔥 Calorías: <b>{perfil['target_kcal']} kcal/día</b>\n"
+        f"  💪 Proteína: <b>{perfil['target_prot']}g/día</b>\n"
+        f"  🌾 Carbos:   <b>{perfil['target_carbs']}g/día</b>\n"
+        f"  🥑 Grasas:   <b>{perfil['target_grasas']}g/día</b>\n"
+        f"  💧 Agua:     <b>3L/día</b>\n\n"
+        f"<i>TDEE calculado: {perfil['tdee']} kcal · Superávit: +{perfil['target_kcal']-perfil['tdee']} kcal</i>\n"
+        f"A partir de ahora, cuando menciones comida te diré cuánto llevas y qué te falta. 💪"
+    )
+    return True
 
 
 # ── Telegram helpers ───────────────────────────────────────────
@@ -151,14 +350,12 @@ def read_vida_state() -> str:
 
 
 # ── Groq AI ────────────────────────────────────────────────────
-SYSTEM_PROMPT = """Eres el asistente personal de vida del usuario. Tu rol es DUAL:
+BASE_SYSTEM_PROMPT = """Eres el asistente personal de vida del usuario. Tu rol es DUAL:
 1. EXTRACTOR: Extraes información estructurada del mensaje del usuario
 2. EXPERTO: Actúas como especialista en cada área y das consejos proactivos
 
-OBJETIVO PRINCIPAL DEL USUARIO: Ganar masa muscular (targets: ~2.800 kcal/día, ~150g proteína, ~350g carbos, ~78g grasas, 3L agua)
-
 ÁREAS DE EXPERTISE:
-- 🥗 Nutricionista deportivo: calcula macros, evalúa si llega a proteína, sugiere ajustes
+- 🥗 Nutricionista deportivo: SIEMPRE que el usuario mencione comida, estima los macros de ESA comida concreta (kcal, proteína, carbos, grasas) con los valores más representativos según las cantidades mencionadas. Si no se dan cantidades exactas, estima porciones normales. Rellena "kcal", "prot", "carbs", "grasas" en el JSON con números (solo el número, sin unidades).
 - 💪 Entrenador personal: sugiere progresiones, recuperación, volumen
 - 🙏 Guía espiritual: celebra la conexión con Dios, anima las prácticas espirituales
 - 💰 Asesor financiero: analiza gastos, progreso hacia ahorro
@@ -178,15 +375,34 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
     "habitos": {"ducha_fria": false, "te_clavo": false, "oracion": false, "silencio": false},
     "diario": {"lo_importante": "", "gratitud": "", "mejora": "", "habitos_ok": ""}
   },
-  "response": "Tu respuesta en HTML de Telegram. Usa <b>negrita</b> y <i>cursiva</i>. Máximo 5 oraciones. Siempre incluye 1 consejo de experto relevante. Si el usuario menciona a Dios/fe, celébralo."
+  "response": "Tu respuesta en HTML de Telegram. Usa <b>negrita</b> y <i>cursiva</i>. Si mencionas comida, incluye los macros estimados de ESA comida en la respuesta. Máximo 5 oraciones. Siempre incluye 1 consejo de experto. Si el usuario menciona a Dios/fe, celébralo."
 }
 
 REGLAS IMPORTANTES:
 - Solo incluye campos con datos reales (deja "" los que no apliquen, false los booleans sin datos)
 - Categorías de gasto válidas: Comida, Transporte, Ocio, Ropa, Salud, Formación, Ahorro, Hogar, Extra
-- Si mencionas proteína, SIEMPRE compara con el target de 150g/día
+- Cuando haya datos de alimentación, SIEMPRE rellena kcal/prot/carbs/grasas con tu mejor estimación numérica
 - Respuesta cálida, motivadora, como un coach amigo
 - Responde siempre en ESPAÑOL"""
+
+
+def build_system_prompt() -> str:
+    """Construye el system prompt con los targets del perfil del usuario."""
+    perfil = load_perfil()
+    if perfil.get("target_kcal"):
+        targets = (
+            f"OBJETIVO DEL USUARIO: Ganar masa muscular\n"
+            f"TARGETS PERSONALIZADOS: {perfil['target_kcal']} kcal/día · "
+            f"{perfil['target_prot']}g proteína · {perfil['target_carbs']}g carbos · "
+            f"{perfil['target_grasas']}g grasas · 3L agua\n"
+            f"TIPO DE CUERPO: {perfil.get('tipo_cuerpo','').capitalize()}"
+        )
+    else:
+        targets = "OBJETIVO DEL USUARIO: Ganar masa muscular (targets aprox: 2800kcal · 150g prot · 350g carbos · 78g grasas · 3L agua)"
+    return targets + "\n\n" + BASE_SYSTEM_PROMPT
+
+
+SYSTEM_PROMPT = BASE_SYSTEM_PROMPT  # compatibilidad — se sobreescribe en call_groq
 
 
 def call_groq(user_message: str, vida_state: str) -> dict:
@@ -195,12 +411,13 @@ def call_groq(user_message: str, vida_state: str) -> dict:
         from groq import Groq
         client = Groq(api_key=GROQ_API_KEY)
 
+        system_prompt = build_system_prompt()
         context = f"ESTADO DEL SISTEMA DE VIDA:\n{vida_state[:1500]}\n\n---\n\nMENSAJE DEL USUARIO:\n{user_message}"
 
         chat = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": context}
             ],
             max_tokens=1024,
@@ -261,6 +478,7 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
             xp_state = load_state()
 
     alim = updates.get("alimentacion", {})
+    alim_guardada = False
     if any(alim.get(k) for k in ["desayuno", "comida", "cena", "kcal", "prot"]):
         args = (
             alim.get("desayuno", ""), alim.get("comida", ""),
@@ -271,6 +489,7 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
         )
         ok = sb.insert_alimentacion(*args) if IS_CLOUD else add_alimentacion_entry(*args)
         if ok:
+            alim_guardada = True
             files_updated.append("🍽️ Alimentación")
             result = award_xp("alimentacion_registrada", xp_state)
             xp_messages.extend(result["messages"])
@@ -425,7 +644,7 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
     # Broadcast al grupo de amigos: level-ups y logros
     _broadcast_highlights(xp_messages, xp_state)
 
-    return files_updated, xp_messages
+    return files_updated, xp_messages, alim_guardada
 
 
 def _broadcast_highlights(xp_messages: list[str], xp_state: dict):
@@ -450,6 +669,11 @@ def _broadcast_highlights(xp_messages: list[str], xp_state: dict):
 def process_message(text: str):
     global last_entry_date
 
+    # Si hay un flujo de perfil activo, capturar la respuesta antes que nada
+    if _profile_conv and text.strip().lower() not in ("/perfil", "/perfil actualizar"):
+        if _handle_profile_step(text):
+            return
+
     lower = text.strip().lower()
 
     if lower in ["/start", "/hola", "/ayuda", "/help"]:
@@ -471,25 +695,39 @@ def process_message(text: str):
         return
 
     if lower == "/perfil":
-        xp_state = load_state()
-        ov_level, ov_name = overall_level(xp_state)
-        skills_text = ""
-        for sk_id, sk_info in SKILLS.items():
-            sk_data = xp_state["skills"].get(sk_id, {"xp": 0, "level": 1})
-            _, sk_lvl_name, sk_in, sk_next = xp_to_level(sk_data["xp"])
-            bar_f = int((sk_in / sk_next * 8)) if sk_next else 8
-            bar   = "█" * bar_f + "░" * (8 - bar_f)
-            skills_text += f"  {sk_info['emoji']} {sk_info['nombre']}: Nv.{sk_data['level']} [{bar}]\n"
-
+        perfil = load_perfil()
+        if perfil.get("peso"):
+            # Mostrar perfil actual y preguntar si quiere actualizarlo
+            tipo = perfil.get("tipo_cuerpo", "—").capitalize()
+            send_message(
+                f"📋 <b>TU PERFIL NUTRICIONAL</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚖️ Peso: <b>{perfil['peso']} kg</b>  📏 Altura: <b>{perfil['altura']} cm</b>\n"
+                f"🎂 Edad: <b>{perfil['edad']} años</b>  💪 Tipo: <b>{tipo}</b>\n"
+                f"🏋️ Entrena: <b>{perfil['dias_entreno']} días/semana</b>\n"
+                f"🥗 Intolerancias: <b>{perfil.get('intolerancias','ninguna')}</b>\n\n"
+                f"🎯 <b>Targets personalizados:</b>\n"
+                f"  🔥 {perfil.get('target_kcal','—')} kcal · 💪 {perfil.get('target_prot','—')}g prot\n"
+                f"  🌾 {perfil.get('target_carbs','—')}g carbos · 🥑 {perfil.get('target_grasas','—')}g grasas\n\n"
+                f"Para actualizar escribe <code>/perfil actualizar</code>"
+            )
+            return
+        # Sin perfil → iniciar flujo
+        _profile_conv.clear()
+        _profile_conv["step"] = 0
+        _profile_conv["data"] = {}
         send_message(
-            f"⚔️ <b>PERFIL DEL AVENTURERO</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🌟 Nivel Global: <b>{ov_level} — {ov_name}</b>\n"
-            f"✨ XP Total: <b>{xp_state['total_xp']:,}</b>\n"
-            f"🏆 Logros: {len(xp_state.get('achievements_unlocked', []))}\n\n"
-            f"<b>Habilidades:</b>\n{skills_text}\n"
-            f"Ver perfil completo: abre <code>perfil-aventurero.md</code> en Obsidian"
+            "🎯 <b>Vamos a personalizar tu plan nutricional!</b>\n\n"
+            "Te haré 6 preguntas rápidas para calcular tus macros exactos según tu cuerpo.\n\n"
+            + PROFILE_STEPS[0]["pregunta"]
         )
+        return
+
+    if lower == "/perfil actualizar":
+        _profile_conv.clear()
+        _profile_conv["step"] = 0
+        _profile_conv["data"] = {}
+        send_message("✏️ <b>Actualizando tu perfil...</b>\n\n" + PROFILE_STEPS[0]["pregunta"])
         return
 
     if lower == "/logros":
@@ -541,13 +779,20 @@ def process_message(text: str):
         updates    = result.get("updates", {})
         response   = result.get("response", "✅ Recibido.")
 
-        files_updated, xp_messages = apply_updates(updates)
+        files_updated, xp_messages, alim_guardada = apply_updates(updates)
         last_entry_date = datetime.now().date()
 
         # Respuesta principal
         final_reply = response
         if files_updated:
             final_reply += f"\n\n<i>📁 Guardado: {' · '.join(files_updated)}</i>"
+
+        # Progreso de macros del día + recomendación (solo si se guardó comida y hay perfil)
+        if alim_guardada and IS_CLOUD:
+            perfil = load_perfil()
+            if perfil.get("target_kcal"):
+                final_reply += _macro_progress_msg(perfil)
+                final_reply += _recomendacion_comida(perfil)
 
         send_message(final_reply)
 
@@ -565,6 +810,254 @@ def process_message(text: str):
     except Exception as e:
         logger.error(f"Error en process_message: {e}", exc_info=True)
         send_message(f"❌ Error procesando tu mensaje: <code>{type(e).__name__}: {e}</code>")
+
+
+# ── Grupo familiar: gastos y tickets ─────────────────────────
+
+def download_telegram_image(file_id: str) -> bytes:
+    """Descarga una imagen de Telegram y devuelve los bytes."""
+    r = requests.get(
+        f"{TELEGRAM_API}/getFile",
+        params={"file_id": file_id},
+        verify=SSL_VERIFY, timeout=10,
+    )
+    file_path = r.json()["result"]["file_path"]
+    img_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    return requests.get(img_url, verify=SSL_VERIFY, timeout=30).content
+
+
+def process_receipt_with_groq_vision(image_bytes: bytes) -> dict:
+    """Envía imagen del ticket a Groq Vision y extrae total + items."""
+    import base64
+    from groq import Groq
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    client = Groq(api_key=GROQ_API_KEY)
+    chat = client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Analiza este ticket o recibo de compra. "
+                        "Devuelve SOLO un JSON válido con esta estructura:\n"
+                        '{"total": 0.0, "concepto": "Supermercado", "items": ['
+                        '{"nombre": "leche", "cantidad": 2, "precio_unitario": 1.20, "total": 2.40}'
+                        "]}\n"
+                        "Si no puedes leer algún campo, usa null. "
+                        "El total debe ser el importe total del ticket. "
+                        "Responde SOLO el JSON, sin texto adicional."
+                    ),
+                },
+            ],
+        }],
+        max_tokens=1024,
+        temperature=0.1,
+    )
+    text = chat.choices[0].message.content.strip()
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        text = text[start:end]
+    return json.loads(text)
+
+
+def process_group_text_expense(text: str, sender_name: str) -> dict | None:
+    """Usa Groq para extraer importe y concepto de un mensaje de texto."""
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        chat = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un extractor de gastos. Del mensaje del usuario, extrae el importe y concepto del gasto.\n"
+                        "Devuelve SOLO un JSON válido: "
+                        '{"importe": 0.0, "concepto": "descripcion", "categoria": "Comida"}\n'
+                        "Categorías válidas: Comida, Limpieza, Higiene, Bebidas, Otros.\n"
+                        "Si el mensaje no contiene un gasto claro, devuelve null.\n"
+                        "Responde SOLO el JSON o null, sin texto adicional."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            max_tokens=128,
+            temperature=0.1,
+        )
+        resp = chat.choices[0].message.content.strip()
+        if resp.lower() == "null" or not resp:
+            return None
+        start = resp.find("{")
+        end = resp.rfind("}") + 1
+        if start >= 0 and end > start:
+            return json.loads(resp[start:end])
+        return None
+    except Exception as e:
+        logger.error(f"Error extrayendo gasto de grupo: {e}")
+        return None
+
+
+def process_group_expense(msg: dict):
+    """Procesa un mensaje del grupo familiar (texto o foto de ticket)."""
+    chat_id = str(msg.get("chat", {}).get("id", ""))
+    sender = msg.get("from", {})
+    sender_name = sender.get("first_name") or sender.get("username") or "Familiar"
+    text = msg.get("text", "").strip()
+    lower = text.lower()
+
+    # Comando /recomendar
+    if lower in ("/recomendar", "/ahorro"):
+        _send_family_savings_tip(chat_id)
+        return
+
+    # Comando /resumen
+    if lower in ("/resumen", "/total"):
+        _send_family_monthly_summary(chat_id)
+        return
+
+    # Foto de ticket
+    if msg.get("photo") or msg.get("document"):
+        send_message("🧾 Analizando ticket...", chat_id=chat_id)
+        try:
+            photos = msg.get("photo", [])
+            if photos:
+                file_id = photos[-1]["file_id"]
+            else:
+                file_id = msg["document"]["file_id"]
+            img_bytes = download_telegram_image(file_id)
+            receipt = process_receipt_with_groq_vision(img_bytes)
+
+            total = float(receipt.get("total") or 0)
+            concepto = receipt.get("concepto") or "Supermercado"
+            items = receipt.get("items") or []
+
+            if IS_CLOUD:
+                import supabase_client as sb
+                sb.insert_gasto_familia(sender_name, concepto, total, "Comida", "foto")
+                if items:
+                    sb.insert_items_compra(items)
+                resumen_mes = sb.get_gastos_familia_mes()
+                total_mes = resumen_mes.get("total", 0)
+            else:
+                total_mes = total
+
+            items_text = ""
+            for it in items[:8]:
+                nom = it.get("nombre") or it.get("item_nombre") or "—"
+                tot = it.get("total") or ""
+                items_text += f"  • {nom}" + (f" — €{tot}" if tot else "") + "\n"
+
+            send_message(
+                f"✅ <b>Ticket registrado</b> por {sender_name}\n"
+                f"💶 Total: <b>€{total:.2f}</b>\n\n"
+                f"<b>Items detectados:</b>\n{items_text or '  (no detectados)'}\n"
+                f"<i>💰 Total gastado en comida este mes: €{total_mes:.2f}</i>",
+                chat_id=chat_id,
+            )
+        except Exception as e:
+            logger.error(f"Error procesando ticket: {e}")
+            send_message("❌ No pude leer el ticket. Intenta con mejor iluminación o envía el importe manualmente.", chat_id=chat_id)
+        return
+
+    # Mensaje de texto con gasto
+    if text:
+        gasto = process_group_text_expense(text, sender_name)
+        if gasto and gasto.get("importe"):
+            importe = float(gasto["importe"])
+            concepto = gasto.get("concepto", "Compra")
+            categoria = gasto.get("categoria", "Comida")
+
+            if IS_CLOUD:
+                import supabase_client as sb
+                sb.insert_gasto_familia(sender_name, concepto, importe, categoria, "texto")
+                resumen_mes = sb.get_gastos_familia_mes()
+                total_mes = resumen_mes.get("total", 0)
+            else:
+                total_mes = importe
+
+            send_message(
+                f"✅ <b>Gasto registrado</b> — {sender_name}\n"
+                f"💶 {concepto}: <b>€{importe:.2f}</b>\n"
+                f"<i>Total mes: €{total_mes:.2f}</i>",
+                chat_id=chat_id,
+            )
+
+
+def _send_family_monthly_summary(chat_id: str):
+    """Envía resumen mensual de gastos familiares al grupo."""
+    if not IS_CLOUD:
+        send_message("⚠️ Resumen disponible solo en modo cloud.", chat_id=chat_id)
+        return
+    import supabase_client as sb
+    datos = sb.get_gastos_familia_mes()
+    total = datos.get("total", 0)
+    por_cat = datos.get("por_categoria", {})
+    registros = datos.get("registros", [])
+
+    cat_text = "\n".join(f"  • {cat}: €{imp:.2f}" for cat, imp in sorted(por_cat.items(), key=lambda x: -x[1]))
+    top_items = sb.get_top_items_mes(5)
+    items_text = "\n".join(f"  {i+1}. {it['item']}: €{it['total']:.2f}" for i, it in enumerate(top_items))
+
+    send_message(
+        f"📊 <b>RESUMEN FAMILIAR — {datetime.now().strftime('%B %Y').upper()}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💶 <b>Total gastado: €{total:.2f}</b>\n\n"
+        f"<b>Por categoría:</b>\n{cat_text or '  (sin datos)'}\n\n"
+        f"<b>Top items más comprados:</b>\n{items_text or '  (sin datos)'}",
+        chat_id=chat_id,
+    )
+
+
+def _send_family_savings_tip(chat_id: str):
+    """Genera recomendaciones de ahorro con Groq y las envía al grupo."""
+    send_message("💡 Analizando vuestros gastos...", chat_id=chat_id)
+    if not IS_CLOUD:
+        send_message("⚠️ Disponible solo en modo cloud.", chat_id=chat_id)
+        return
+    import supabase_client as sb
+    datos = sb.get_gastos_familia_mes()
+    top_items = sb.get_top_items_mes(10)
+    resumen = (
+        f"Gastos familiares del mes: €{datos['total']:.2f}\n"
+        f"Desglose: {datos['por_categoria']}\n"
+        f"Top items: {[f'{it[\"item\"]}:€{it[\"total\"]:.2f}' for it in top_items]}"
+    )
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        chat = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un asesor financiero familiar. Analiza los datos de gasto "
+                        "y da 3-4 recomendaciones concretas y prácticas para ahorrar en la compra. "
+                        "Responde en español con formato HTML de Telegram (usa <b> y <i>). "
+                        "Sé específico con los items más caros."
+                    ),
+                },
+                {"role": "user", "content": resumen},
+            ],
+            max_tokens=512,
+            temperature=0.5,
+        )
+        tip = chat.choices[0].message.content.strip()
+        send_message(f"💡 <b>RECOMENDACIONES DE AHORRO</b>\n\n{tip}", chat_id=chat_id)
+    except Exception as e:
+        logger.error(f"Error generando tips de ahorro: {e}")
+        send_message("❌ No pude generar las recomendaciones ahora.", chat_id=chat_id)
 
 
 # ── Recordatorio diario ────────────────────────────────────────
@@ -641,7 +1134,16 @@ def _make_flask_app():
             if len(_processed_msg_ids) > 500:
                 _processed_msg_ids.clear()
 
-        if str(msg.get("chat", {}).get("id", "")) != CHAT_ID:
+        incoming_chat_id = str(msg.get("chat", {}).get("id", ""))
+
+        # Grupo familiar
+        if GRUPO_FAMILIA_CHAT_ID and incoming_chat_id == GRUPO_FAMILIA_CHAT_ID:
+            def handle_group():
+                process_group_expense(msg)
+            threading.Thread(target=handle_group, daemon=True).start()
+            return jsonify({"ok": True})
+
+        if incoming_chat_id != CHAT_ID:
             return jsonify({"ok": True})
 
         # Procesar TODO en background para devolver 200 inmediatamente
@@ -713,10 +1215,14 @@ def main():
                 while True:
                     try:
                         for update in get_updates():
-                            msg  = update.get("message", {})
-                            text = msg.get("text", "").strip()
-                            if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and text:
-                                process_message(text)
+                            msg = update.get("message", {})
+                            incoming = str(msg.get("chat", {}).get("id", ""))
+                            if GRUPO_FAMILIA_CHAT_ID and incoming == GRUPO_FAMILIA_CHAT_ID:
+                                process_group_expense(msg)
+                            elif incoming == CHAT_ID:
+                                text = msg.get("text", "").strip()
+                                if text:
+                                    process_message(text)
                         schedule.run_pending()
                         time.sleep(2)
                     except Exception as e:
