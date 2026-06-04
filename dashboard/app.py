@@ -22,7 +22,7 @@ except ImportError:
     _HAS_AUTOREFRESH = False
 
 st.set_page_config(
-    page_title="Trading System XAUUSD v2",
+    page_title="Trading System XAUUSD",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
