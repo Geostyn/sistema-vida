@@ -1028,10 +1028,11 @@ def _send_family_savings_tip(chat_id: str):
     import supabase_client as sb
     datos = sb.get_gastos_familia_mes()
     top_items = sb.get_top_items_mes(10)
+    top_str = [it["item"] + ":€" + f"{it['total']:.2f}" for it in top_items]
     resumen = (
         f"Gastos familiares del mes: €{datos['total']:.2f}\n"
         f"Desglose: {datos['por_categoria']}\n"
-        f"Top items: {[f'{it[\"item\"]}:€{it[\"total\"]:.2f}' for it in top_items]}"
+        f"Top items: {top_str}"
     )
     try:
         from groq import Groq
