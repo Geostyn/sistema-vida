@@ -370,6 +370,7 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
     "lexico": [{"palabra": "", "definicion": "", "ejemplo": ""}],
     "refranes": [{"refran": "", "significado": "", "contexto": ""}],
     "gastos": [{"categoria": "", "concepto": "", "importe": 0.0}],
+    "ingresos": [{"categoria": "", "concepto": "", "importe": 0.0}],
     "ideas": [{"idea": "", "inversion": "", "tiempo": "", "potencial": ""}],
     "trading": {"observacion": "", "tipo": "💡", "accion": ""},
     "habitos": {"ducha_fria": false, "te_clavo": false, "oracion": false, "silencio": false},
@@ -380,7 +381,10 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
 
 REGLAS IMPORTANTES:
 - Solo incluye campos con datos reales (deja "" los que no apliquen, false los booleans sin datos)
-- Categorías de gasto válidas: Comida, Transporte, Ocio, Ropa, Salud, Formación, Ahorro, Hogar, Extra
+- Categorías de GASTO válidas: Comida, Gasolina, Transporte, Ocio, Ropa, Salud, Formación, Ahorro, Hogar, Servicios, Suscripciones, Extra
+- Categorías de INGRESO válidas: Nómina, Freelance, Trading, Extra, Otros
+- "gastos" = dinero que SALE (compras, facturas, pagos). "ingresos" = dinero que ENTRA (sueldo, cobros, transferencias recibidas)
+- Si el usuario menciona que cobró, recibió dinero, nómina, sueldo, ingreso → usa "ingresos", NO "gastos"
 - Cuando haya datos de alimentación, SIEMPRE rellena kcal/prot/carbs/grasas con tu mejor estimación numérica
 - Respuesta cálida, motivadora, como un coach amigo
 - Responde siempre en ESPAÑOL"""
@@ -541,6 +545,12 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
             result = award_xp("gasto_registrado", xp_state)
             xp_messages.extend(result["messages"])
             xp_state = result["state"]
+
+    for ingreso in updates.get("ingresos", []):
+        if ingreso.get("concepto") and ingreso.get("importe"):
+            if IS_CLOUD:
+                sb.insert_ingreso(ingreso.get("categoria", "Otros"), ingreso["concepto"], float(ingreso["importe"]))
+            files_updated.append(f"💰 Ingreso €{ingreso['importe']}")
 
     for idea in updates.get("ideas", []):
         if idea.get("idea"):

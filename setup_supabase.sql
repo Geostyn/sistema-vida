@@ -115,7 +115,18 @@ create table if not exists ideas_negocio (
 );
 alter table ideas_negocio disable row level security;
 
--- 10. Perfil nutricional del usuario
+-- 10. Ingresos personales
+create table if not exists ingresos (
+  id uuid default gen_random_uuid() primary key,
+  fecha date not null default current_date,
+  categoria text not null,
+  concepto text,
+  importe numeric not null,
+  created_at timestamptz default now()
+);
+alter table ingresos disable row level security;
+
+-- 11. Perfil nutricional del usuario
 create table if not exists perfil_usuario (
   id integer primary key default 1,
   peso numeric,

@@ -481,47 +481,223 @@ with tab4:
         st.info("Sin datos de nutrición aún.")
 
 # ════════════════════════════════════════════════════════════════
-# TAB 5 — GASTOS
+# TAB 5 — GASTOS & INGRESOS
 # ════════════════════════════════════════════════════════════════
 with tab5:
-    gastos_data = q("gastos", filters={"fecha": f"gte.{MONTH_START}"})
+    YEAR_START_FIN = TODAY[:4] + "-01-01"
+    CAT_GASTO  = ["Comida","Gasolina","Transporte","Ocio","Ropa","Salud","Formación","Ahorro","Hogar","Servicios","Suscripciones","Extra"]
+    CAT_INGRESO = ["Nómina","Freelance","Trading","Extra","Otros"]
 
-    if gastos_data:
-        df_g = pd.DataFrame(gastos_data)
-        df_g["importe"] = pd.to_numeric(df_g["importe"], errors="coerce").fillna(0)
-        total   = df_g["importe"].sum()
-        por_cat = df_g.groupby("categoria")["importe"].sum().reset_index().sort_values("importe", ascending=False)
+    gastos_data   = q("gastos",   filters={"fecha": f"gte.{MONTH_START}"}, order="fecha", desc=True)
+    ingresos_data = q("ingresos", filters={"fecha": f"gte.{MONTH_START}"}, order="fecha", desc=True)
 
-        gm1, gm2, gm3 = st.columns(3)
-        gm1.metric(f"💶 Total {MONTH_LABEL}", f"€{total:.2f}")
-        gm2.metric("🛒 Nº transacciones",     len(df_g))
-        gm3.metric("📊 Mayor gasto",           f"€{df_g['importe'].max():.2f}" if len(df_g) else "—")
+    df_g = pd.DataFrame(gastos_data)   if gastos_data   else pd.DataFrame(columns=["id","fecha","categoria","concepto","importe"])
+    df_i = pd.DataFrame(ingresos_data) if ingresos_data else pd.DataFrame(columns=["id","fecha","categoria","concepto","importe"])
+    df_g["importe"] = pd.to_numeric(df_g["importe"], errors="coerce").fillna(0)
+    df_i["importe"] = pd.to_numeric(df_i["importe"], errors="coerce").fillna(0)
 
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            fig_pie = go.Figure(go.Pie(
-                labels=por_cat["categoria"], values=por_cat["importe"],
-                hole=0.45, textinfo="label+percent",
-            ))
-            fig_pie.update_layout(
-                paper_bgcolor="#0e1117", font=dict(color="white"),
-                height=320, margin=dict(t=20,b=10),
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-        with col2:
-            st.dataframe(
-                por_cat.rename(columns={"categoria":"Categoría","importe":"€"}),
-                hide_index=True, use_container_width=True
-            )
+    total_g   = df_g["importe"].sum()
+    total_i   = df_i["importe"].sum()
+    balance   = total_i - total_g
 
-        st.subheader("📋 Transacciones del mes")
-        cols_g = [c for c in ["fecha","categoria","concepto","importe"] if c in df_g.columns]
-        st.dataframe(
-            df_g[cols_g].sort_values("fecha", ascending=False),
-            hide_index=True, use_container_width=True
+    # ── Métricas de balance ──
+    st.subheader(f"💶 Balance personal — {MONTH_LABEL}")
+    b1, b2, b3 = st.columns(3)
+    b1.metric("💰 Ingresos",  f"€{total_i:.2f}")
+    b2.metric("💸 Gastos",    f"€{total_g:.2f}")
+    b3.metric("📊 Balance",   f"€{balance:.2f}",
+              delta=f"{'positivo' if balance >= 0 else 'negativo'}",
+              delta_color="normal" if balance >= 0 else "inverse")
+
+    st.divider()
+
+    # ── Histórico anual ──
+    st.subheader(f"📈 Histórico {TODAY[:4]}")
+    gastos_ano   = q("gastos",   select="fecha,importe,categoria", filters={"fecha": f"gte.{YEAR_START_FIN}"})
+    ingresos_ano = q("ingresos", select="fecha,importe,categoria", filters={"fecha": f"gte.{YEAR_START_FIN}"})
+
+    if gastos_ano or ingresos_ano:
+        df_ga = pd.DataFrame(gastos_ano   or [])
+        df_ia = pd.DataFrame(ingresos_ano or [])
+        if not df_ga.empty:
+            df_ga["importe"] = pd.to_numeric(df_ga["importe"], errors="coerce").fillna(0)
+            df_ga["mes"] = pd.to_datetime(df_ga["fecha"]).dt.to_period("M").astype(str)
+        if not df_ia.empty:
+            df_ia["importe"] = pd.to_numeric(df_ia["importe"], errors="coerce").fillna(0)
+            df_ia["mes"] = pd.to_datetime(df_ia["fecha"]).dt.to_period("M").astype(str)
+
+        meses_g = df_ga.groupby("mes")["importe"].sum() if not df_ga.empty else pd.Series(dtype=float)
+        meses_i = df_ia.groupby("mes")["importe"].sum() if not df_ia.empty else pd.Series(dtype=float)
+        todos_meses = sorted(set(list(meses_g.index) + list(meses_i.index)))
+
+        fig_anual = go.Figure()
+        fig_anual.add_trace(go.Bar(name="Ingresos", x=todos_meses,
+            y=[meses_i.get(m, 0) for m in todos_meses], marker_color="#4CAF50"))
+        fig_anual.add_trace(go.Bar(name="Gastos",   x=todos_meses,
+            y=[meses_g.get(m, 0) for m in todos_meses], marker_color="#f44336"))
+        fig_anual.update_layout(
+            barmode="group", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"), height=280, margin=dict(t=20,b=20),
         )
-    else:
-        st.info("Sin gastos este mes aún.")
+        st.plotly_chart(fig_anual, use_container_width=True)
+
+        # Selector de mes histórico
+        meses_disp = sorted(set(list(meses_g.index) + list(meses_i.index)), reverse=True)
+        mes_fin = st.selectbox("🔍 Ver detalle de mes:", meses_disp, key="sel_mes_fin")
+        df_g_sel = df_ga[df_ga["mes"] == mes_fin] if not df_ga.empty else pd.DataFrame()
+        df_i_sel = df_ia[df_ia["mes"] == mes_fin] if not df_ia.empty else pd.DataFrame()
+        t_g_sel  = df_g_sel["importe"].sum() if not df_g_sel.empty else 0
+        t_i_sel  = df_i_sel["importe"].sum() if not df_i_sel.empty else 0
+
+        ms1, ms2, ms3 = st.columns(3)
+        ms1.metric("💰 Ingresos", f"€{t_i_sel:.2f}")
+        ms2.metric("💸 Gastos",   f"€{t_g_sel:.2f}")
+        ms3.metric("📊 Balance",  f"€{t_i_sel - t_g_sel:.2f}")
+
+        hcol1, hcol2 = st.columns(2)
+        with hcol1:
+            if not df_g_sel.empty:
+                pc = df_g_sel.groupby("categoria")["importe"].sum().reset_index()
+                fig_pc = go.Figure(go.Pie(labels=pc["categoria"], values=pc["importe"],
+                    hole=0.4, textinfo="label+percent"))
+                fig_pc.update_layout(title=f"Gastos por categoría — {mes_fin}",
+                    paper_bgcolor="#0e1117", font=dict(color="white"),
+                    height=300, margin=dict(t=40,b=10))
+                st.plotly_chart(fig_pc, use_container_width=True)
+            else:
+                st.caption("Sin gastos ese mes.")
+        with hcol2:
+            if not df_i_sel.empty:
+                pi = df_i_sel.groupby("categoria")["importe"].sum().reset_index()
+                fig_pi = go.Figure(go.Bar(x=pi["importe"], y=pi["categoria"],
+                    orientation="h", marker_color="#4CAF50",
+                    text=[f"€{v:.0f}" for v in pi["importe"]], textposition="outside"))
+                fig_pi.update_layout(title=f"Ingresos — {mes_fin}",
+                    paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                    font=dict(color="white"), height=300, margin=dict(t=40,b=10,r=60))
+                st.plotly_chart(fig_pi, use_container_width=True)
+            else:
+                st.caption("Sin ingresos ese mes.")
+
+    st.divider()
+
+    # ── Gráficos mes actual ──
+    col_g, col_i = st.columns(2)
+    with col_g:
+        st.subheader("💸 Gastos este mes")
+        if not df_g.empty:
+            pc = df_g.groupby("categoria")["importe"].sum().reset_index().sort_values("importe", ascending=False)
+            fig_g = go.Figure(go.Pie(labels=pc["categoria"], values=pc["importe"],
+                hole=0.4, textinfo="label+percent"))
+            fig_g.update_layout(paper_bgcolor="#0e1117", font=dict(color="white"),
+                height=300, margin=dict(t=20,b=10))
+            st.plotly_chart(fig_g, use_container_width=True)
+        else:
+            st.info("Sin gastos este mes.")
+    with col_i:
+        st.subheader("💰 Ingresos este mes")
+        if not df_i.empty:
+            pi = df_i.groupby("categoria")["importe"].sum().reset_index()
+            fig_i = go.Figure(go.Bar(x=pi["importe"], y=pi["categoria"],
+                orientation="h", marker_color="#4CAF50",
+                text=[f"€{v:.0f}" for v in pi["importe"]], textposition="outside"))
+            fig_i.update_layout(paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                font=dict(color="white"), height=300, margin=dict(t=20,b=10,r=60))
+            st.plotly_chart(fig_i, use_container_width=True)
+        else:
+            st.info("Sin ingresos este mes.")
+
+    st.divider()
+
+    # ── Editores interactivos ──
+    edit_tab_g, edit_tab_i, edit_tab_add = st.tabs(["✏️ Editar gastos", "✏️ Editar ingresos", "➕ Añadir"])
+
+    with edit_tab_g:
+        if not df_g.empty:
+            df_edit_g = df_g[["id","fecha","categoria","concepto","importe"]].copy()
+            df_edit_g.insert(0, "🗑️", False)
+            edited_g = st.data_editor(df_edit_g, hide_index=True, use_container_width=True,
+                num_rows="fixed", key="editor_g",
+                column_config={
+                    "🗑️":        st.column_config.CheckboxColumn("🗑️", width="small"),
+                    "id":         st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                    "fecha":      st.column_config.TextColumn("Fecha", width="small"),
+                    "categoria":  st.column_config.SelectboxColumn("Categoría", options=CAT_GASTO),
+                    "concepto":   st.column_config.TextColumn("Concepto"),
+                    "importe":    st.column_config.NumberColumn("€", format="€%.2f"),
+                })
+            cg1, cg2 = st.columns(2)
+            with cg1:
+                if st.button("💾 Guardar gastos", type="primary", use_container_width=True):
+                    saved = sum(sb_patch("gastos", int(r["id"]), {
+                        "fecha": r["fecha"], "categoria": r["categoria"],
+                        "concepto": r["concepto"], "importe": float(r["importe"])
+                    }) for _, r in edited_g[~edited_g["🗑️"]].iterrows())
+                    st.success(f"✅ {saved} guardados")
+                    st.rerun()
+            with cg2:
+                to_del = edited_g[edited_g["🗑️"] == True]
+                if len(to_del) and st.button(f"🗑️ Borrar {len(to_del)}", use_container_width=True):
+                    for _, r in to_del.iterrows():
+                        sb_delete("gastos", int(r["id"]))
+                    st.success("Borrado.")
+                    st.rerun()
+        else:
+            st.info("Sin gastos este mes.")
+
+    with edit_tab_i:
+        if not df_i.empty:
+            df_edit_i = df_i[["id","fecha","categoria","concepto","importe"]].copy()
+            df_edit_i.insert(0, "🗑️", False)
+            edited_i = st.data_editor(df_edit_i, hide_index=True, use_container_width=True,
+                num_rows="fixed", key="editor_i",
+                column_config={
+                    "🗑️":        st.column_config.CheckboxColumn("🗑️", width="small"),
+                    "id":         st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                    "fecha":      st.column_config.TextColumn("Fecha", width="small"),
+                    "categoria":  st.column_config.SelectboxColumn("Categoría", options=CAT_INGRESO),
+                    "concepto":   st.column_config.TextColumn("Concepto"),
+                    "importe":    st.column_config.NumberColumn("€", format="€%.2f"),
+                })
+            ci1, ci2 = st.columns(2)
+            with ci1:
+                if st.button("💾 Guardar ingresos", type="primary", use_container_width=True):
+                    saved = sum(sb_patch("ingresos", int(r["id"]), {
+                        "fecha": r["fecha"], "categoria": r["categoria"],
+                        "concepto": r["concepto"], "importe": float(r["importe"])
+                    }) for _, r in edited_i[~edited_i["🗑️"]].iterrows())
+                    st.success(f"✅ {saved} guardados")
+                    st.rerun()
+            with ci2:
+                to_del_i = edited_i[edited_i["🗑️"] == True]
+                if len(to_del_i) and st.button(f"🗑️ Borrar {len(to_del_i)}", use_container_width=True, key="del_i"):
+                    for _, r in to_del_i.iterrows():
+                        sb_delete("ingresos", int(r["id"]))
+                    st.success("Borrado.")
+                    st.rerun()
+        else:
+            st.info("Sin ingresos este mes.")
+
+    with edit_tab_add:
+        tipo_add = st.radio("Tipo", ["💸 Gasto", "💰 Ingreso"], horizontal=True)
+        with st.form("form_add_fin", clear_on_submit=True):
+            fa1, fa2 = st.columns(2)
+            af_fecha   = fa1.text_input("Fecha", value=TODAY)
+            af_importe = fa2.number_input("€ Importe", min_value=0.0, step=0.01, format="%.2f")
+            fa3, fa4   = st.columns(2)
+            cats       = CAT_GASTO if "Gasto" in tipo_add else CAT_INGRESO
+            af_cat     = fa3.selectbox("Categoría", cats)
+            af_conc    = fa4.text_input("Concepto")
+            if st.form_submit_button("➕ Añadir", type="primary", use_container_width=True):
+                if af_importe > 0 and af_conc:
+                    tabla = "gastos" if "Gasto" in tipo_add else "ingresos"
+                    ok = sb_insert(tabla, {"fecha": af_fecha, "categoria": af_cat,
+                                           "concepto": af_conc, "importe": af_importe})
+                    if ok:
+                        st.success(f"✅ Añadido: {af_conc} €{af_importe:.2f}")
+                        st.rerun()
+                else:
+                    st.warning("Rellena el importe y el concepto.")
 
 # ════════════════════════════════════════════════════════════════
 # TAB 6 — DIARIO & IDEAS

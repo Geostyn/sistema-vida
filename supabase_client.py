@@ -109,6 +109,32 @@ def insert_gasto(categoria, concepto, importe) -> bool:
         return False
 
 
+def insert_ingreso(categoria, concepto, importe) -> bool:
+    try:
+        get_client().table("ingresos").insert({
+            "fecha": _today(), "categoria": categoria,
+            "concepto": concepto, "importe": float(importe),
+        }).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase insert_ingreso: {e}")
+        return False
+
+
+def get_balance_mes() -> dict:
+    """Devuelve total gastos, total ingresos y balance del mes."""
+    try:
+        month_start = _today()[:8] + "01"
+        g = get_client().table("gastos").select("importe").gte("fecha", month_start).execute()
+        i = get_client().table("ingresos").select("importe").gte("fecha", month_start).execute()
+        total_gastos = sum(float(r["importe"]) for r in (g.data or []))
+        total_ingresos = sum(float(r["importe"]) for r in (i.data or []))
+        return {"gastos": total_gastos, "ingresos": total_ingresos, "balance": total_ingresos - total_gastos}
+    except Exception as e:
+        logger.error(f"Supabase get_balance_mes: {e}")
+        return {"gastos": 0, "ingresos": 0, "balance": 0}
+
+
 def insert_lexico(palabra, definicion, ejemplo) -> bool:
     try:
         get_client().table("lexico").insert({
