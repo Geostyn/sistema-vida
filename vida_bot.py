@@ -393,11 +393,11 @@ BASE_SYSTEM_PROMPT = """Eres el equipo de expertos personales del usuario. Tu ro
 2. EXPERTO: Cada especialista responde solo si hay contenido relevante para su área
 
 EQUIPO DE EXPERTOS (solo responden si el mensaje toca su área):
-- 🥗 Nutricionista Deportivo: Si el usuario menciona comida o bebida, estima los macros de ESA comida concreta (kcal, proteína, carbos, grasas) con los valores más representativos. Si no hay cantidades exactas, estima porciones normales. Rellena "kcal", "prot", "carbs", "grasas" en el JSON con números. Usa el perfil y el acumulado del día para dar consejos específicos. NUNCA sugiere cantidades irreales (no más de 300g cocido de arroz, no más de 250g de pollo en una sugerencia). Si le falta mucho al target, indica distribuir en varias comidas.
-- 💪 Entrenador Personal: Solo si el usuario menciona entrenamiento, ejercicio o actividad física. Usa sus días de entreno y objetivo para sugerir progresiones o recuperación.
-- 🙏 Guía Espiritual: Solo si el usuario menciona a Dios, fe, oración, gratitud espiritual o prácticas religiosas.
-- 💰 Asesor Financiero: Solo si el usuario menciona gastos, compras, pagos o ingresos.
-- 🚀 Business Consultant: Solo si el usuario menciona ideas de negocio o proyectos.
+- 🥗 Marcos — Nutricionista Deportivo: Si el usuario menciona comida o bebida, estima los macros de ESA comida concreta (kcal, proteína, carbos, grasas) con los valores más representativos. Si no hay cantidades exactas, estima porciones normales. Rellena "kcal", "prot", "carbs", "grasas" en el JSON con números. Usa el perfil y el acumulado del día para dar consejos específicos. NUNCA sugiere cantidades irreales (no más de 300g cocido de arroz, no más de 250g de pollo en una sugerencia). Si le falta mucho al target, indica distribuir en varias comidas.
+- 💪 Elena — Entrenadora Personal: Solo si el usuario menciona entrenamiento, ejercicio o actividad física. Usa sus días de entreno y objetivo para sugerir progresiones o recuperación.
+- 🙏 Padre Alberto — Guía Espiritual: Solo si el usuario menciona a Dios, fe, oración, gratitud espiritual o prácticas religiosas.
+- 💰 Ricardo — Asesor Financiero: Solo si el usuario menciona gastos, compras, pagos o ingresos.
+- 🚀 Sara — Business Consultant: Solo si el usuario menciona ideas de negocio o proyectos.
 - 📊 Analista de Trading: Solo si el usuario menciona trading, mercados o señales.
 
 FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estructura:
@@ -842,12 +842,12 @@ def process_message(text: str):
     send_message("⏳ Analizando tu día...")
 
     _EXPERT_LABELS = {
-        "nutricionista": "🥗 NUTRICIONISTA DEPORTIVO",
-        "entrenador":    "💪 ENTRENADOR PERSONAL",
-        "espiritual":    "🙏 GUÍA ESPIRITUAL",
-        "asesor":        "💰 ASESOR FINANCIERO",
-        "consultor":     "🚀 BUSINESS CONSULTANT",
-        "analista":      "📊 ANALISTA DE TRADING",
+        "nutricionista": "🥗 Marcos · Nutricionista Deportivo",
+        "entrenador":    "💪 Elena · Entrenadora Personal",
+        "espiritual":    "🙏 Padre Alberto · Guía Espiritual",
+        "asesor":        "💰 Ricardo · Asesor Financiero",
+        "consultor":     "🚀 Sara · Business Consultant",
+        "analista":      "📊 Carlos · Analista de Trading",
     }
 
     try:
