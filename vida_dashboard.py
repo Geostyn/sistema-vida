@@ -577,6 +577,92 @@ with tab6:
 with tab7:
     st.subheader("👨‍👩‍👧 Gastos Familiares — Supermercado")
 
+    # ── Histórico anual ──────────────────────────────────────────
+    year_start = TODAY[:4] + "-01-01"
+    hist_data  = q("gastos_familia", select="fecha,importe,categoria", filters={"fecha": f"gte.{year_start}"})
+
+    if hist_data:
+        df_hist = pd.DataFrame(hist_data)
+        df_hist["importe"] = pd.to_numeric(df_hist["importe"], errors="coerce").fillna(0)
+        df_hist["mes"]     = pd.to_datetime(df_hist["fecha"]).dt.to_period("M").astype(str)
+
+        # Gráfico de barras por mes
+        monthly = df_hist.groupby("mes")["importe"].sum().reset_index().sort_values("mes")
+        fig_anual = go.Figure(go.Bar(
+            x=monthly["mes"], y=monthly["importe"],
+            marker_color="#4CAF50",
+            text=[f"€{v:.0f}" for v in monthly["importe"]],
+            textposition="outside",
+        ))
+        fig_anual.update_layout(
+            title=f"Gasto mensual — {TODAY[:4]}",
+            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"), height=280,
+            margin=dict(t=40, b=20),
+            yaxis_title="€",
+        )
+        st.plotly_chart(fig_anual, use_container_width=True)
+
+        # Selector de mes para ver detalle
+        meses_disponibles = sorted(df_hist["mes"].unique(), reverse=True)
+        mes_sel = st.selectbox("🔍 Ver detalle de un mes:", meses_disponibles, key="sel_mes_hist")
+
+        df_mes_sel = df_hist[df_hist["mes"] == mes_sel]
+        total_sel  = df_mes_sel["importe"].sum()
+
+        hc1, hc2, hc3 = st.columns(3)
+        hc1.metric("💶 Total del mes", f"€{total_sel:.2f}")
+        hc2.metric("🛒 Registros",     len(df_mes_sel))
+        hc3.metric("📊 Gasto medio/registro", f"€{df_mes_sel['importe'].mean():.2f}" if len(df_mes_sel) else "—")
+
+        col_h1, col_h2 = st.columns(2)
+        with col_h1:
+            por_cat_sel = df_mes_sel.groupby("categoria")["importe"].sum().reset_index()
+            fig_cat_sel = go.Figure(go.Pie(
+                labels=por_cat_sel["categoria"], values=por_cat_sel["importe"],
+                hole=0.4, textinfo="label+percent",
+            ))
+            fig_cat_sel.update_layout(
+                title=f"Categorías — {mes_sel}",
+                paper_bgcolor="#0e1117", font=dict(color="white"),
+                height=300, margin=dict(t=40, b=10),
+            )
+            st.plotly_chart(fig_cat_sel, use_container_width=True)
+
+        with col_h2:
+            # Top items de ese mes
+            ic_mes = q("items_compra",
+                       select="item_nombre,item_traduccion,total",
+                       filters={"fecha": f"gte.{mes_sel}-01", "fecha": f"lte.{mes_sel}-31"})
+            if ic_mes:
+                df_ic_mes = pd.DataFrame(ic_mes)
+                df_ic_mes["total"] = pd.to_numeric(df_ic_mes["total"], errors="coerce").fillna(0)
+                df_ic_mes["etiqueta"] = df_ic_mes.apply(
+                    lambda r: f"{r['item_nombre']} ({r['item_traduccion']})"
+                    if r.get("item_traduccion") else str(r["item_nombre"]), axis=1
+                )
+                top_mes = (df_ic_mes.groupby("etiqueta")["total"]
+                           .sum().reset_index()
+                           .sort_values("total", ascending=True).tail(8))
+                fig_top = go.Figure(go.Bar(
+                    x=top_mes["total"], y=top_mes["etiqueta"],
+                    orientation="h", marker_color="#FF9800",
+                    text=[f"€{v:.2f}" for v in top_mes["total"]],
+                    textposition="outside",
+                ))
+                fig_top.update_layout(
+                    title=f"Top items — {mes_sel}",
+                    paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                    font=dict(color="white"), height=300,
+                    margin=dict(t=40, b=10, l=10, r=60),
+                )
+                st.plotly_chart(fig_top, use_container_width=True)
+            else:
+                st.caption("Sin items escaneados ese mes.")
+
+        st.divider()
+
+    # ── Mes actual ──────────────────────────────────────────────
     gf_data = q("gastos_familia", filters={"fecha": f"gte.{MONTH_START}"}, order="fecha", desc=True)
     ic_data = q("items_compra",   filters={"fecha": f"gte.{MONTH_START}"})
 
