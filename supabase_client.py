@@ -244,6 +244,33 @@ def insert_items_compra(items: list, fecha: str = None) -> bool:
         return False
 
 
+def delete_ultimo_gasto_familia() -> dict:
+    """Borra el último registro de gastos_familia y sus items del mismo día. Devuelve lo borrado."""
+    try:
+        r = get_client().table("gastos_familia").select("*").order("created_at", desc=True).limit(1).execute()
+        if not r.data:
+            return {}
+        row = r.data[0]
+        get_client().table("gastos_familia").delete().eq("id", row["id"]).execute()
+        get_client().table("items_compra").delete().eq("fecha", row["fecha"]).execute()
+        return row
+    except Exception as e:
+        logger.error(f"Supabase delete_ultimo_gasto_familia: {e}")
+        return {}
+
+
+def delete_gastos_familia_mes() -> int:
+    """Borra todos los gastos familiares e items del mes actual. Devuelve número de registros borrados."""
+    try:
+        month_start = _today()[:8] + "01"
+        r = get_client().table("gastos_familia").delete().gte("fecha", month_start).execute()
+        get_client().table("items_compra").delete().gte("fecha", month_start).execute()
+        return len(r.data) if r.data else 0
+    except Exception as e:
+        logger.error(f"Supabase delete_gastos_familia_mes: {e}")
+        return 0
+
+
 def get_gastos_familia_mes() -> dict:
     """Total del mes + desglose por categoría."""
     try:

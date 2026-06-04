@@ -1000,6 +1000,38 @@ def process_group_expense(msg: dict):
         _send_family_monthly_summary(chat_id)
         return
 
+    # Comando /borrar — eliminar último ticket
+    if lower == "/borrar":
+        if IS_CLOUD:
+            import supabase_client as sb
+            borrado = sb.delete_ultimo_gasto_familia()
+            if borrado:
+                send_message(
+                    f"🗑️ <b>Último registro borrado:</b>\n"
+                    f"📅 {borrado.get('fecha')} · {borrado.get('concepto')} · €{borrado.get('importe', 0):.2f}\n\n"
+                    f"<i>También se borraron los items de ese día. Ahora puedes volver a subir el ticket.</i>",
+                    chat_id=chat_id,
+                )
+            else:
+                send_message("No hay registros para borrar.", chat_id=chat_id)
+        else:
+            send_message("⚠️ Solo disponible en modo cloud.", chat_id=chat_id)
+        return
+
+    # Comando /borrar todo — eliminar todos los registros del mes
+    if lower == "/borrar todo":
+        if IS_CLOUD:
+            import supabase_client as sb
+            n = sb.delete_gastos_familia_mes()
+            send_message(
+                f"🗑️ <b>Mes limpiado.</b> Se borraron {n} registros y todos sus items.\n"
+                f"Ahora puedes volver a subir los tickets con la fecha correcta.",
+                chat_id=chat_id,
+            )
+        else:
+            send_message("⚠️ Solo disponible en modo cloud.", chat_id=chat_id)
+        return
+
     # Foto de ticket
     if msg.get("photo") or msg.get("document"):
         send_message("🧾 Analizando ticket...", chat_id=chat_id)
