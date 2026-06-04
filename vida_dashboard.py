@@ -31,15 +31,15 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit.")
     st.stop()
 
-# ── REST helper ───────────────────────────────────────────────
-def q(table, select="*", filters=None, order=None, desc=False, limit=None):
+# ── REST helpers ──────────────────────────────────────────────
+def _sb_creds():
     try:
-        key = st.secrets["SUPABASE_KEY"]
-        url = st.secrets["SUPABASE_URL"]
+        return st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
     except Exception:
-        key = SUPABASE_KEY
-        url = SUPABASE_URL
+        return SUPABASE_URL, SUPABASE_KEY
 
+def q(table, select="*", filters=None, order=None, desc=False, limit=None):
+    url, key = _sb_creds()
     headers = {"apikey": key, "Authorization": f"Bearer {key}"}
     params = {"select": select}
     if filters:
@@ -55,6 +55,42 @@ def q(table, select="*", filters=None, order=None, desc=False, limit=None):
     except Exception as e:
         st.warning(f"Error cargando {table}: {e}")
         return []
+
+def sb_patch(table, row_id, data: dict) -> bool:
+    url, key = _sb_creds()
+    headers = {
+        "apikey": key, "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json", "Prefer": "return=minimal",
+    }
+    try:
+        r = requests.patch(f"{url}/rest/v1/{table}?id=eq.{row_id}", json=data, headers=headers, timeout=10)
+        return r.ok
+    except Exception as e:
+        st.warning(f"Error actualizando {table}: {e}")
+        return False
+
+def sb_delete(table, row_id) -> bool:
+    url, key = _sb_creds()
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "return=minimal"}
+    try:
+        r = requests.delete(f"{url}/rest/v1/{table}?id=eq.{row_id}", headers=headers, timeout=10)
+        return r.ok
+    except Exception as e:
+        st.warning(f"Error borrando de {table}: {e}")
+        return False
+
+def sb_insert(table, data: dict) -> bool:
+    url, key = _sb_creds()
+    headers = {
+        "apikey": key, "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json", "Prefer": "return=minimal",
+    }
+    try:
+        r = requests.post(f"{url}/rest/v1/{table}", json=data, headers=headers, timeout=10)
+        return r.ok
+    except Exception as e:
+        st.warning(f"Error insertando en {table}: {e}")
+        return False
 
 # ── Constantes ────────────────────────────────────────────────
 TODAY       = date.today().isoformat()
@@ -637,13 +673,85 @@ with tab7:
 
         st.divider()
 
-        # Historial
-        st.subheader("📋 Historial de compras")
-        df_gf["fecha"] = df_gf["fecha"].dt.strftime("%Y-%m-%d")
-        cols_h = [c for c in ["fecha","miembro","concepto","importe","categoria","origen"] if c in df_gf.columns]
-        st.dataframe(
-            df_gf[cols_h].rename(columns={"fecha":"Fecha","miembro":"Quién","concepto":"Qué","importe":"€","categoria":"Categoría","origen":"Tipo"}),
-            hide_index=True, use_container_width=True,
+        # ── Editor de registros ──
+        st.subheader("✏️ Editar / Borrar registros")
+        st.caption("Edita cualquier celda directamente y pulsa **Guardar cambios**. Marca la casilla ☑ para borrar filas.")
+
+        df_edit = df_gf[["id","fecha","miembro","concepto","importe","categoria"]].copy()
+        df_edit["fecha"] = df_edit["fecha"].dt.strftime("%Y-%m-%d")
+        df_edit.insert(0, "🗑️ Borrar", False)
+
+        edited = st.data_editor(
+            df_edit,
+            column_config={
+                "🗑️ Borrar": st.column_config.CheckboxColumn("🗑️", width="small"),
+                "id":         st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                "fecha":      st.column_config.TextColumn("Fecha", width="small"),
+                "miembro":    st.column_config.TextColumn("Quién"),
+                "concepto":   st.column_config.TextColumn("Qué"),
+                "importe":    st.column_config.NumberColumn("€", format="€%.2f"),
+                "categoria":  st.column_config.SelectboxColumn(
+                    "Categoría",
+                    options=["Comida","Limpieza","Higiene","Bebidas","Otros"],
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="editor_gastos",
         )
+
+        col_save, col_del = st.columns([1, 1])
+        with col_save:
+            if st.button("💾 Guardar cambios", type="primary", use_container_width=True):
+                saved = 0
+                for _, row in edited.iterrows():
+                    if not row["🗑️ Borrar"]:
+                        ok = sb_patch("gastos_familia", int(row["id"]), {
+                            "fecha": row["fecha"], "miembro": row["miembro"],
+                            "concepto": row["concepto"], "importe": float(row["importe"]),
+                            "categoria": row["categoria"],
+                        })
+                        if ok:
+                            saved += 1
+                st.success(f"✅ {saved} registros actualizados.")
+                st.rerun()
+
+        with col_del:
+            to_delete = edited[edited["🗑️ Borrar"] == True]
+            if len(to_delete) > 0:
+                if st.button(f"🗑️ Borrar {len(to_delete)} seleccionados", type="secondary", use_container_width=True):
+                    deleted = 0
+                    for _, row in to_delete.iterrows():
+                        if sb_delete("gastos_familia", int(row["id"])):
+                            deleted += 1
+                    st.success(f"🗑️ {deleted} registros borrados.")
+                    st.rerun()
+
+        st.divider()
+
+        # ── Añadir registro manual ──
+        st.subheader("➕ Añadir registro manual")
+        with st.form("form_nuevo_gasto", clear_on_submit=True):
+            fc1, fc2, fc3 = st.columns(3)
+            nf_fecha    = fc1.text_input("Fecha (YYYY-MM-DD)", value=str(date.today()))
+            nf_miembro  = fc2.text_input("Quién", placeholder="Nombre")
+            nf_importe  = fc3.number_input("€ Importe", min_value=0.0, step=0.01, format="%.2f")
+            fc4, fc5    = st.columns(2)
+            nf_concepto = fc4.text_input("Concepto", placeholder="Lidl, Carrefour…")
+            nf_categoria= fc5.selectbox("Categoría", ["Comida","Limpieza","Higiene","Bebidas","Otros"])
+            submitted = st.form_submit_button("➕ Añadir", type="primary", use_container_width=True)
+            if submitted:
+                if nf_importe > 0 and nf_concepto:
+                    ok = sb_insert("gastos_familia", {
+                        "fecha": nf_fecha, "miembro": nf_miembro, "concepto": nf_concepto,
+                        "importe": nf_importe, "categoria": nf_categoria, "origen": "manual",
+                    })
+                    if ok:
+                        st.success(f"✅ Añadido: {nf_concepto} €{nf_importe:.2f}")
+                        st.rerun()
+                else:
+                    st.warning("Rellena al menos el importe y el concepto.")
+
     else:
         st.info("No hay gastos familiares registrados este mes. Añade el bot al grupo de Telegram y empieza a registrar compras con texto o fotos de tickets.")
