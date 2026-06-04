@@ -629,7 +629,7 @@ with tab5:
             cg1, cg2 = st.columns(2)
             with cg1:
                 if st.button("💾 Guardar gastos", type="primary", use_container_width=True):
-                    saved = sum(sb_patch("gastos", int(r["id"]), {
+                    saved = sum(sb_patch("gastos", r["id"], {
                         "fecha": r["fecha"], "categoria": r["categoria"],
                         "concepto": r["concepto"], "importe": float(r["importe"])
                     }) for _, r in edited_g[~edited_g["🗑️"]].iterrows())
@@ -639,7 +639,7 @@ with tab5:
                 to_del = edited_g[edited_g["🗑️"] == True]
                 if len(to_del) and st.button(f"🗑️ Borrar {len(to_del)}", use_container_width=True):
                     for _, r in to_del.iterrows():
-                        sb_delete("gastos", int(r["id"]))
+                        sb_delete("gastos", r["id"])
                     st.success("Borrado.")
                     st.rerun()
         else:
@@ -662,7 +662,7 @@ with tab5:
             ci1, ci2 = st.columns(2)
             with ci1:
                 if st.button("💾 Guardar ingresos", type="primary", use_container_width=True):
-                    saved = sum(sb_patch("ingresos", int(r["id"]), {
+                    saved = sum(sb_patch("ingresos", r["id"], {
                         "fecha": r["fecha"], "categoria": r["categoria"],
                         "concepto": r["concepto"], "importe": float(r["importe"])
                     }) for _, r in edited_i[~edited_i["🗑️"]].iterrows())
@@ -672,7 +672,7 @@ with tab5:
                 to_del_i = edited_i[edited_i["🗑️"] == True]
                 if len(to_del_i) and st.button(f"🗑️ Borrar {len(to_del_i)}", use_container_width=True, key="del_i"):
                     for _, r in to_del_i.iterrows():
-                        sb_delete("ingresos", int(r["id"]))
+                        sb_delete("ingresos", r["id"])
                     st.success("Borrado.")
                     st.rerun()
         else:
