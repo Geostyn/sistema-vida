@@ -32,16 +32,23 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.stop()
 
 # ── REST helpers ──────────────────────────────────────────────
-def _sb_creds():
+def _headers():
     try:
-        return st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
+        key = st.secrets["SUPABASE_KEY"]
     except Exception:
-        return SUPABASE_URL, SUPABASE_KEY
+        key = SUPABASE_KEY
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+def _base_url():
+    try:
+        return st.secrets["SUPABASE_URL"]
+    except Exception:
+        return SUPABASE_URL
 
 def q(table, select="*", filters=None, order=None, desc=False, limit=None):
-    url, key = _sb_creds()
-    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
-    params = {"select": select}
+    headers = _headers()
+    base    = _base_url()
+    params  = {"select": select}
     if filters:
         params.update(filters)
     if order:
@@ -49,44 +56,50 @@ def q(table, select="*", filters=None, order=None, desc=False, limit=None):
     if limit:
         params["limit"] = str(limit)
     try:
-        r = requests.get(f"{url}/rest/v1/{table}", params=params, headers=headers, timeout=10)
+        r = requests.get(f"{base}/rest/v1/{table}", params=params, headers=headers, timeout=10)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if isinstance(data, dict) and "message" in data:
+            st.warning(f"Supabase error en {table}: {data['message']}")
+            return []
+        return data
     except Exception as e:
         st.warning(f"Error cargando {table}: {e}")
         return []
 
 def sb_patch(table, row_id, data: dict) -> bool:
-    url, key = _sb_creds()
-    headers = {
-        "apikey": key, "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json", "Prefer": "return=minimal",
-    }
+    headers = {**_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"}
+    base    = _base_url()
     try:
-        r = requests.patch(f"{url}/rest/v1/{table}?id=eq.{row_id}", json=data, headers=headers, timeout=10)
+        r = requests.patch(f"{base}/rest/v1/{table}?id=eq.{row_id}",
+                           json=data, headers=headers, timeout=10)
+        if not r.ok:
+            st.warning(f"Error al guardar ({r.status_code}): {r.text[:200]}")
         return r.ok
     except Exception as e:
         st.warning(f"Error actualizando {table}: {e}")
         return False
 
 def sb_delete(table, row_id) -> bool:
-    url, key = _sb_creds()
-    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "return=minimal"}
+    headers = {**_headers(), "Prefer": "return=minimal"}
+    base    = _base_url()
     try:
-        r = requests.delete(f"{url}/rest/v1/{table}?id=eq.{row_id}", headers=headers, timeout=10)
+        r = requests.delete(f"{base}/rest/v1/{table}?id=eq.{row_id}",
+                            headers=headers, timeout=10)
+        if not r.ok:
+            st.warning(f"Error al borrar ({r.status_code}): {r.text[:200]}")
         return r.ok
     except Exception as e:
         st.warning(f"Error borrando de {table}: {e}")
         return False
 
 def sb_insert(table, data: dict) -> bool:
-    url, key = _sb_creds()
-    headers = {
-        "apikey": key, "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json", "Prefer": "return=minimal",
-    }
+    headers = {**_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"}
+    base    = _base_url()
     try:
-        r = requests.post(f"{url}/rest/v1/{table}", json=data, headers=headers, timeout=10)
+        r = requests.post(f"{base}/rest/v1/{table}", json=data, headers=headers, timeout=10)
+        if not r.ok:
+            st.warning(f"Error al insertar ({r.status_code}): {r.text[:200]}")
         return r.ok
     except Exception as e:
         st.warning(f"Error insertando en {table}: {e}")
@@ -630,10 +643,10 @@ with tab7:
             st.plotly_chart(fig_cat_sel, use_container_width=True)
 
         with col_h2:
-            # Top items de ese mes
-            ic_mes = q("items_compra",
-                       select="item_nombre,item_traduccion,total",
-                       filters={"fecha": f"like.{mes_sel}%"})
+            # Top items de ese mes (filtrado en Python para evitar problemas con like+%)
+            ic_ano = q("items_compra", select="fecha,item_nombre,item_traduccion,total",
+                       filters={"fecha": f"gte.{year_start}"})
+            ic_mes = [r for r in ic_ano if str(r.get("fecha", "")).startswith(mes_sel)]
             if ic_mes:
                 df_ic_mes = pd.DataFrame(ic_mes)
                 df_ic_mes["total"] = pd.to_numeric(df_ic_mes["total"], errors="coerce").fillna(0)
