@@ -857,8 +857,15 @@ with tab_lectura:
         with _lca:
             st.markdown(f"**{_libro_actual['titulo']}**")
             st.caption(f"{_libro_actual.get('autor') or '—'} · {_libro_actual.get('categoria') or '—'}")
-            if _libro_actual.get("ruta_archivo"):
-                st.caption(f"Archivo: `{_libro_actual['ruta_archivo']}`")
+            if _libro_actual.get("drive_url"):
+                st.link_button("Abrir en Google Drive", _libro_actual["drive_url"])
+            elif _libro_actual.get("ruta_archivo"):
+                st.caption(f"`{_libro_actual['ruta_archivo']}`")
+                if st.button("Abrir PDF (local)", key="lec_abrir_actual"):
+                    try:
+                        os.startfile(_libro_actual["ruta_archivo"])
+                    except Exception as _eopen:
+                        st.error(f"No se pudo abrir: {_eopen}")
         with _lcb:
             _rating_val = st.slider("Rating", 1, 5, int(_libro_actual.get("rating") or 3), key="lec_rating")
             _notas_val  = st.text_area("Notas", value=_libro_actual.get("notas") or "", height=80, key="lec_notas")
@@ -902,8 +909,15 @@ with tab_lectura:
 <h4 style="color:#4CAF50;margin:0 0 6px 0">{_rec.get('titulo','—')}</h4>
 <p style="color:#ccc;margin:2px 0"><b>Autor:</b> {_rec.get('autor','—')}</p>
 <p style="color:#ccc;margin:2px 0"><b>Categoria:</b> {_rec.get('categoria','—')}</p>
-<p style="color:#888;font-size:0.82em;margin-top:8px">Ruta: {_rec.get('ruta_archivo','—')}</p>
 </div>""", unsafe_allow_html=True)
+            if _rec.get("drive_url"):
+                st.link_button("Abrir en Google Drive", _rec["drive_url"])
+            elif _rec.get("ruta_archivo"):
+                if st.button("Abrir PDF (local)", key="lec_btn_abrir_rec"):
+                    try:
+                        os.startfile(_rec["ruta_archivo"])
+                    except Exception as _eo:
+                        st.error(f"No se pudo abrir: {_eo}")
             if st.button("Empezar a leer este libro", key="lec_btn_empezar"):
                 try:
                     _sblec.table("libros").update({
@@ -974,12 +988,18 @@ with tab_lectura:
         _em = {"Pendiente":"pendiente","Leyendo":"leyendo","Leido":"leido"}
         _df_filtrado = _df_filtrado[_df_filtrado["estado"] == _em[_filtro_estado]]
     st.caption(f"Mostrando {len(_df_filtrado):,} libros")
-    _cols_show = [c for c in ["titulo","autor","categoria","estado","rating","fecha_fin"] if c in _df_filtrado.columns]
+    _df_mostrar = _df_filtrado.copy()
+    # Columna Abrir: link de Drive si existe, vacío si no
+    _df_mostrar["Abrir"] = _df_mostrar["drive_url"].fillna("") if "drive_url" in _df_mostrar.columns else ""
+    _cols_show = [c for c in ["titulo","autor","categoria","estado","rating","fecha_fin"] if c in _df_mostrar.columns]
     st.dataframe(
-        _df_filtrado[_cols_show].rename(columns={
+        _df_mostrar[_cols_show + ["Abrir"]].rename(columns={
             "titulo":"Titulo","autor":"Autor","categoria":"Categoria",
             "estado":"Estado","rating":"Rating","fecha_fin":"Terminado",
         }),
+        column_config={
+            "Abrir": st.column_config.LinkColumn("Abrir", display_text="Abrir libro"),
+        },
         hide_index=True, use_container_width=True,
     )
 

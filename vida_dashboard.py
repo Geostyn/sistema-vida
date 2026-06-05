@@ -1068,8 +1068,10 @@ with tab_lectura:
         with lca:
             st.markdown(f"**{libro_actual['titulo']}**")
             st.caption(f"{libro_actual.get('autor') or '—'} · {libro_actual.get('categoria') or '—'}")
-            if libro_actual.get("ruta_archivo"):
-                st.caption(f"Archivo: `{libro_actual['ruta_archivo']}`")
+            if libro_actual.get("drive_url"):
+                st.link_button("Abrir en Google Drive", libro_actual["drive_url"])
+            elif libro_actual.get("ruta_archivo"):
+                st.caption(f"`{libro_actual['ruta_archivo']}`")
         with lcb:
             rating_val = st.slider("Rating", 1, 5, int(libro_actual.get("rating") or 3), key="lec_rating")
             notas_val  = st.text_area("Notas", value=libro_actual.get("notas") or "", height=80, key="lec_notas")
@@ -1114,9 +1116,14 @@ with tab_lectura:
 <h4 style="color:#4CAF50;margin:0 0 6px 0">{rec.get('titulo','—')}</h4>
 <p style="color:#ccc;margin:2px 0"><b>Autor:</b> {rec.get('autor','—')}</p>
 <p style="color:#ccc;margin:2px 0"><b>Categoria:</b> {rec.get('categoria','—')}</p>
-<p style="color:#888;font-size:0.82em;margin-top:8px">Ruta: {rec.get('ruta_archivo','—')}</p>
 </div>
 """, unsafe_allow_html=True)
+            if rec.get("drive_url"):
+                st.link_button("Abrir en Google Drive", rec["drive_url"])
+            elif rec.get("ruta_archivo") and os.path.exists(rec["ruta_archivo"]):
+                if st.button("Abrir PDF (solo desde PC)", key="lec_btn_abrir_rec"):
+                    import subprocess
+                    subprocess.Popen(["start", "", rec["ruta_archivo"]], shell=True)
             if st.button("Empezar a leer este libro", key="lec_btn_empezar"):
                 ok = sb_patch("libros", int(rec["id"]), {
                     "estado": "leyendo", "fecha_inicio": today_lec,
@@ -1188,11 +1195,16 @@ with tab_lectura:
         df_filtrado = df_filtrado[df_filtrado["estado"] == estado_map[filtro_estado]]
 
     st.caption(f"Mostrando {len(df_filtrado):,} libros")
-    cols_show = [c for c in ["titulo", "autor", "categoria", "estado", "rating", "fecha_fin"] if c in df_filtrado.columns]
+    df_mostrar = df_filtrado.copy()
+    df_mostrar["Abrir"] = df_mostrar["drive_url"].fillna("") if "drive_url" in df_mostrar.columns else ""
+    cols_show = [c for c in ["titulo", "autor", "categoria", "estado", "rating", "fecha_fin"] if c in df_mostrar.columns]
     st.dataframe(
-        df_filtrado[cols_show].rename(columns={
+        df_mostrar[cols_show + ["Abrir"]].rename(columns={
             "titulo": "Titulo", "autor": "Autor", "categoria": "Categoria",
             "estado": "Estado", "rating": "Rating", "fecha_fin": "Terminado",
         }),
+        column_config={
+            "Abrir": st.column_config.LinkColumn("Abrir", display_text="Abrir libro"),
+        },
         hide_index=True, use_container_width=True,
     )
