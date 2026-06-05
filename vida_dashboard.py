@@ -159,8 +159,8 @@ c5.metric("🚿 Racha ducha fría",   f"{streak_val(streaks,'ducha_fria')} días
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "⚔️ Perfil RPG", "🏋️ Deporte", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos", "📖 Diario & Ideas", "👨‍👩‍👧 Gastos Familia"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_lectura = st.tabs([
+    "⚔️ Perfil RPG", "🏋️ Deporte", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos", "📖 Diario & Ideas", "👨‍👩‍👧 Gastos Familia", "📚 Lectura"
 ])
 
 # ════════════════════════════════════════════════════════════════
@@ -1030,3 +1030,169 @@ with tab7:
 
     else:
         st.info("No hay gastos familiares registrados este mes. Añade el bot al grupo de Telegram y empieza a registrar compras con texto o fotos de tickets.")
+
+# ════════════════════════════════════════════════════════════════
+# TAB 8 — LECTURA
+# ════════════════════════════════════════════════════════════════
+with tab_lectura:
+    st.subheader("📚 Biblioteca Personal")
+
+    libros_data = q("libros", order="titulo")
+    if not libros_data:
+        st.info("La biblioteca esta vacia. Ejecuta `resources/populate_libros.py` despues de que termine la descarga.")
+        st.stop()
+
+    df_lib = pd.DataFrame(libros_data)
+    today_lec = str(date.today())
+
+    # ── Metricas ──
+    total_lib   = len(df_lib)
+    leidos_lib  = int((df_lib["estado"] == "leido").sum())
+    leyendo_lib = int((df_lib["estado"] == "leyendo").sum())
+    cats_leidas = int(df_lib[df_lib["estado"] == "leido"]["categoria"].nunique()) if leidos_lib else 0
+
+    lm1, lm2, lm3, lm4 = st.columns(4)
+    lm1.metric("Biblioteca", f"{total_lib:,} libros")
+    lm2.metric("Leidos", leidos_lib)
+    lm3.metric("Leyendo ahora", leyendo_lib)
+    lm4.metric("Categorias exploradas", cats_leidas)
+
+    st.divider()
+
+    # ── Libro actual ──
+    leyendo_df = df_lib[df_lib["estado"] == "leyendo"]
+    if len(leyendo_df) > 0:
+        libro_actual = leyendo_df.iloc[0]
+        st.subheader("📖 Leyendo ahora")
+        lca, lcb = st.columns([3, 1])
+        with lca:
+            st.markdown(f"**{libro_actual['titulo']}**")
+            st.caption(f"{libro_actual.get('autor') or '—'} · {libro_actual.get('categoria') or '—'}")
+            if libro_actual.get("ruta_archivo"):
+                st.caption(f"Archivo: `{libro_actual['ruta_archivo']}`")
+        with lcb:
+            rating_val = st.slider("Rating", 1, 5, int(libro_actual.get("rating") or 3), key="lec_rating")
+            notas_val  = st.text_area("Notas", value=libro_actual.get("notas") or "", height=80, key="lec_notas")
+            if st.button("Marcar como leido", key="lec_btn_leido"):
+                ok = sb_patch("libros", int(libro_actual["id"]), {
+                    "estado": "leido", "rating": rating_val,
+                    "fecha_fin": today_lec, "notas": notas_val,
+                })
+                if ok:
+                    st.success("Libro marcado como leido!")
+                    st.rerun()
+        st.divider()
+
+    # ── Recomendacion semanal ──
+    st.subheader("Recomendacion semanal")
+    cats_disponibles = sorted(
+        df_lib[df_lib["estado"] == "pendiente"]["categoria"].dropna().unique().tolist()
+    )
+    if cats_disponibles:
+        rca, rcb = st.columns([3, 1])
+        with rca:
+            cat_sel = st.selectbox("Categoria", cats_disponibles, key="lec_cat")
+        with rcb:
+            st.write("")
+            st.write("")
+            btn_recom = st.button("Dame una recomendacion", key="lec_btn_recom")
+
+        if btn_recom:
+            pendientes_cat = df_lib[
+                (df_lib["estado"] == "pendiente") & (df_lib["categoria"] == cat_sel)
+            ]
+            if len(pendientes_cat) > 0:
+                rec = pendientes_cat.sample(1).iloc[0]
+                st.session_state["lec_recom"] = rec.to_dict()
+            else:
+                st.warning(f"No hay libros pendientes en '{cat_sel}'")
+
+        if "lec_recom" in st.session_state:
+            rec = st.session_state["lec_recom"]
+            st.markdown(f"""
+<div style="background:#1e2130;border-radius:8px;padding:16px;border-left:4px solid #4CAF50;margin:8px 0">
+<h4 style="color:#4CAF50;margin:0 0 6px 0">{rec.get('titulo','—')}</h4>
+<p style="color:#ccc;margin:2px 0"><b>Autor:</b> {rec.get('autor','—')}</p>
+<p style="color:#ccc;margin:2px 0"><b>Categoria:</b> {rec.get('categoria','—')}</p>
+<p style="color:#888;font-size:0.82em;margin-top:8px">Ruta: {rec.get('ruta_archivo','—')}</p>
+</div>
+""", unsafe_allow_html=True)
+            if st.button("Empezar a leer este libro", key="lec_btn_empezar"):
+                ok = sb_patch("libros", int(rec["id"]), {
+                    "estado": "leyendo", "fecha_inicio": today_lec,
+                })
+                if ok:
+                    del st.session_state["lec_recom"]
+                    st.success(f"Empezando '{rec['titulo']}'!")
+                    st.rerun()
+    else:
+        st.info("No hay libros pendientes. Has leido toda la biblioteca!")
+
+    st.divider()
+
+    # ── Estadisticas ──
+    if leidos_lib > 0:
+        st.subheader("Progreso de lectura")
+        por_cat = (
+            df_lib[df_lib["estado"] == "leido"]
+            .groupby("categoria").size()
+            .reset_index(name="leidos")
+            .sort_values("leidos", ascending=True)
+        )
+        if len(por_cat) > 0:
+            fig_cat = go.Figure(go.Bar(
+                x=por_cat["leidos"], y=por_cat["categoria"],
+                orientation="h", marker_color="#4CAF50",
+                text=por_cat["leidos"], textposition="outside",
+            ))
+            fig_cat.update_layout(
+                title="Libros leidos por categoria",
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                font=dict(color="white"),
+                height=max(200, len(por_cat) * 30),
+                margin=dict(t=40, b=10, l=10, r=40),
+            )
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+        ultimos = (
+            df_lib[df_lib["estado"] == "leido"]
+            .sort_values("fecha_fin", ascending=False)
+            .head(5)
+        )
+        st.caption("Ultimos 5 leidos:")
+        cols_ult = [c for c in ["titulo", "autor", "categoria", "rating", "fecha_fin"] if c in ultimos.columns]
+        st.dataframe(
+            ultimos[cols_ult].rename(columns={
+                "titulo": "Titulo", "autor": "Autor", "categoria": "Categoria",
+                "rating": "Rating", "fecha_fin": "Fecha fin",
+            }),
+            hide_index=True, use_container_width=True,
+        )
+        st.divider()
+
+    # ── Biblioteca completa ──
+    st.subheader("Biblioteca completa")
+    filtro_cats = st.multiselect(
+        "Filtrar por categoria",
+        sorted(df_lib["categoria"].dropna().unique().tolist()),
+        key="lec_filtro_cats",
+    )
+    filtro_estado = st.radio(
+        "Estado", ["Todos", "Pendiente", "Leyendo", "Leido"], horizontal=True, key="lec_filtro_estado"
+    )
+    df_filtrado = df_lib.copy()
+    if filtro_cats:
+        df_filtrado = df_filtrado[df_filtrado["categoria"].isin(filtro_cats)]
+    if filtro_estado != "Todos":
+        estado_map = {"Pendiente": "pendiente", "Leyendo": "leyendo", "Leido": "leido"}
+        df_filtrado = df_filtrado[df_filtrado["estado"] == estado_map[filtro_estado]]
+
+    st.caption(f"Mostrando {len(df_filtrado):,} libros")
+    cols_show = [c for c in ["titulo", "autor", "categoria", "estado", "rating", "fecha_fin"] if c in df_filtrado.columns]
+    st.dataframe(
+        df_filtrado[cols_show].rename(columns={
+            "titulo": "Titulo", "autor": "Autor", "categoria": "Categoria",
+            "estado": "Estado", "rating": "Rating", "fecha_fin": "Terminado",
+        }),
+        hide_index=True, use_container_width=True,
+    )
