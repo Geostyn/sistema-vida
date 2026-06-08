@@ -228,7 +228,17 @@ insert into mejoras (nombre, categoria, descripcion, evidencia) values
    'Regula el ritmo circadiano via retina → SCN → cortisol matutino. El Dr. Huberman: la luz matutina aumenta cortisol (pico saludable AM), mejora alerta diurna y calidad del sueño nocturno un 50%.')
 on conflict do nothing;
 
--- ✅ Verificación: debería mostrar 13 tablas
+-- 14. Registro de datos curiosos enviados (anti-repetición)
+create table if not exists datos_enviados (
+  id         bigserial primary key,
+  titulo     text,
+  categoria  text,
+  slot       text,
+  enviado_at timestamptz default now()
+);
+alter table datos_enviados disable row level security;
+
+-- ✅ Verificación: debería mostrar 14 tablas
 select table_name from information_schema.tables
 where table_schema = 'public'
 order by table_name;

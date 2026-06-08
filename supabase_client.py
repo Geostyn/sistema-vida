@@ -333,6 +333,29 @@ def get_top_items_mes(n: int = 10) -> list:
         return []
 
 
+# ── Datos curiosos (anti-repetición) ────────────────────────
+
+def get_temas_recientes(n: int = 30) -> list:
+    """Devuelve los últimos N títulos enviados para evitar repetición."""
+    try:
+        r = get_client().table("datos_enviados").select("titulo").order("enviado_at", desc=True).limit(n).execute()
+        return [row["titulo"] for row in (r.data or [])]
+    except Exception as e:
+        logger.error(f"Supabase get_temas_recientes: {e}")
+        return []
+
+
+def insert_dato_enviado(titulo: str, categoria: str, slot: str) -> bool:
+    try:
+        get_client().table("datos_enviados").insert({
+            "titulo": titulo, "categoria": categoria, "slot": slot,
+        }).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase insert_dato_enviado: {e}")
+        return False
+
+
 # ── Mejoras de bienestar ─────────────────────────────────────
 
 def get_mejoras(estado: str = None) -> list:

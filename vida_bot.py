@@ -86,6 +86,9 @@ GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")    or cfg.get("groq", {}).get("
 GROQ_MODEL      = os.environ.get("GROQ_MODEL")      or cfg.get("groq", {}).get("model", "llama-3.3-70b-versatile")
 REMINDER_TIME   = os.environ.get("REMINDER_TIME")   or cfg.get("vida_bot", {}).get("reminder_time", "21:00")
 CREATINE_TIME   = os.environ.get("CREATINE_TIME")   or cfg.get("vida_bot", {}).get("creatine_time", "09:00")
+DATO_MAÑANA     = os.environ.get("DATO_MAÑANA")     or cfg.get("vida_bot", {}).get("dato_manana", "08:30")
+DATO_TARDE      = os.environ.get("DATO_TARDE")      or cfg.get("vida_bot", {}).get("dato_tarde",  "14:00")
+DATO_NOCHE      = os.environ.get("DATO_NOCHE")      or cfg.get("vida_bot", {}).get("dato_noche",  "20:00")
 
 # Cloud mode: activo cuando Supabase está configurado (Fly.io)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -102,6 +105,8 @@ TELEGRAM_API   = f"https://api.telegram.org/bot{BOT_TOKEN}"
 last_update_id = 0
 last_entry_date = None
 _last_recommended_mejora: dict = {}
+_noche_counter = 0           # cada 3 noches → idea de negocio en lugar de dato curioso
+_DATOS_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datos_log.json")
 
 # ── Perfil nutricional ─────────────────────────────────────────
 PROFILE_STEPS = [
@@ -115,6 +120,20 @@ PROFILE_STEPS = [
 
 _profile_conv: dict = {}
 _perfil_cache: dict = {}
+_ikigai_conv: dict = {}
+
+IKIGAI_STEPS = [
+    {"circulo": "amas",    "pregunta": "🌸 <b>Pregunta 1/10 — Lo que AMAS</b>\n\n¿Qué actividades te hacen olvidar el tiempo cuando las haces?"},
+    {"circulo": "amas",    "pregunta": "🌸 <b>Pregunta 2/10 — Lo que AMAS</b>\n\n¿De qué temas podrías hablar durante horas sin cansarte?"},
+    {"circulo": "amas",    "pregunta": "🌸 <b>Pregunta 3/10 — Lo que AMAS</b>\n\n¿Qué harías con tu tiempo si el dinero no importara en absoluto?"},
+    {"circulo": "bien",    "pregunta": "💪 <b>Pregunta 4/10 — En lo que ERES BUENO</b>\n\n¿En qué te dice la gente que destacas o que eres especialmente bueno?"},
+    {"circulo": "bien",    "pregunta": "💪 <b>Pregunta 5/10 — En lo que ERES BUENO</b>\n\n¿Qué habilidades o conocimientos tienes que otros no suelen tener?"},
+    {"circulo": "mundo",   "pregunta": "🌍 <b>Pregunta 6/10 — Lo que el MUNDO NECESITA</b>\n\n¿Qué problemas del mundo o de tu entorno te indignan y querrías resolver?"},
+    {"circulo": "mundo",   "pregunta": "🌍 <b>Pregunta 7/10 — Lo que el MUNDO NECESITA</b>\n\n¿Cómo crees que podrías ayudar a otros con lo que sabes o amas?"},
+    {"circulo": "pagan",   "pregunta": "💰 <b>Pregunta 8/10 — Por lo que te PAGAN</b>\n\n¿Por qué cosas tienes conocimiento o habilidades que alguien pagaría?"},
+    {"circulo": "pagan",   "pregunta": "💰 <b>Pregunta 9/10 — Por lo que te PAGAN</b>\n\n¿Tienes experiencias o habilidades que ya están demandadas en el mercado?"},
+    {"circulo": "profundo","pregunta": "🔮 <b>Pregunta 10/10 — Lo más Profundo</b>\n\n¿Cuál es tu mayor miedo en la vida y cuál es tu mayor sueño?\nSé tan honesto como puedas."},
+]
 
 ACTIVITY_FACTORS = {0: 1.2, 1: 1.375, 2: 1.375, 3: 1.55, 4: 1.55, 5: 1.725, 6: 1.725, 7: 1.9}
 PERFIL_FILE = os.path.join(SCRIPT_DIR, "perfil_usuario.json")
@@ -744,6 +763,11 @@ def process_message(text: str):
         if _handle_profile_step(text):
             return
 
+    # Si hay un flujo de ikigai activo, capturar la respuesta
+    if _ikigai_conv and text.strip().lower() not in ("/ikigai",):
+        if _handle_ikigai_step(text):
+            return
+
     lower = text.strip().lower()
 
     if lower in ["/start", "/hola", "/ayuda", "/help"]:
@@ -761,7 +785,10 @@ def process_message(text: str):
             "/mejoras — Ver mejoras en proceso\n"
             "/recomendar — Recibir nueva mejora de la semana\n"
             "/reto — Retar a tus amigos en el grupo\n"
-            "/estado — Estado del sistema de vida\n\n"
+            "/estado — Estado del sistema de vida\n"
+            "/datos — Recibir dato curioso ahora\n"
+            "/datos [categoria] — Ej: /datos negocios\n"
+            "/ikigai — Descubrir tu propósito de vida\n\n"
             "<b>Atajos:</b>\n"
             "<code>creatina ✅</code> — Registrar creatina del día\n"
             "<code>quiero intentarlo</code> — Añadir mejora recomendada a tus hábitos\n"
@@ -873,6 +900,26 @@ def process_message(text: str):
 
     if lower in ["/recomendar", "/mejora nueva"]:
         send_mejora_semanal()
+        return
+
+    if lower == "/ikigai":
+        _ikigai_conv.clear()
+        _ikigai_conv["step"] = 0
+        _ikigai_conv["answers"] = {}
+        sep = "─" * 24
+        msg = (
+            "🌸 <b>DESCUBRE TU IKIGAI</b>\n" + sep + "\n\n"
+            "El <i>ikigai</i> (生き甲斐) es el concepto japonés del \"razón de ser\".\n"
+            "Te haré <b>10 preguntas</b>. Responde con total honestidad.\n\n"
+            "No hay respuestas correctas ni incorrectas — solo las tuyas.\n\n"
+        ) + IKIGAI_STEPS[0]["pregunta"]
+        send_message(msg)
+        return
+
+    if lower.startswith("/datos"):
+        parts = text.strip().split(maxsplit=1)
+        cat = parts[1].strip() if len(parts) > 1 else None
+        send_dato_curioso(slot="mañana", categoria_override=cat)
         return
 
     # Detectar "quiero intentarlo"
@@ -1341,6 +1388,163 @@ def _send_family_savings_tip(chat_id: str):
         send_message("❌ No pude generar las recomendaciones ahora.", chat_id=chat_id)
 
 
+# ── Datos curiosos diarios ─────────────────────────────────────
+_SLOT_CATS = {
+    "mañana": ["ciencia", "cuerpo humano", "psicología", "física", "biología"],
+    "tarde":  ["historia", "tecnología", "naturaleza", "geografía", "astronomía"],
+    "noche":  ["negocios", "economía", "emprendimiento", "psicología del dinero", "productividad"],
+}
+
+
+def _get_titulos_recientes() -> list:
+    """Lee los últimos 30 títulos enviados (Supabase en cloud, JSON local en modo local)."""
+    if IS_CLOUD:
+        try:
+            from supabase_client import get_temas_recientes
+            return get_temas_recientes(30)
+        except Exception:
+            pass
+    try:
+        with open(_DATOS_LOG, "r", encoding="utf-8") as f:
+            return json.load(f).get("titulos", [])[-30:]
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _guardar_titulo(titulo: str, categoria: str, slot: str):
+    if IS_CLOUD:
+        try:
+            from supabase_client import insert_dato_enviado
+            insert_dato_enviado(titulo, categoria, slot)
+        except Exception:
+            pass
+    # Siempre guarda local también como backup
+    try:
+        data = {}
+        try:
+            with open(_DATOS_LOG, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        titulos = data.get("titulos", [])
+        titulos.append(titulo)
+        data["titulos"] = titulos[-60:]   # máximo 60 en local
+        with open(_DATOS_LOG, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"_guardar_titulo local: {e}")
+
+
+def send_dato_curioso(slot: str = "mañana", categoria_override: str = None):
+    global _noche_counter
+    import random as _random
+
+    # Cada 3ª noche → idea de negocio
+    if slot == "noche":
+        _noche_counter += 1
+        if _noche_counter % 3 == 0:
+            _send_idea_negocio_diaria()
+            return
+
+    cats = _SLOT_CATS.get(slot, _SLOT_CATS["mañana"])
+    categoria = categoria_override or _random.choice(cats)
+    recientes = _get_titulos_recientes()
+    recientes_str = ", ".join(f'"{t}"' for t in recientes[-20:]) if recientes else "ninguno"
+
+    prompt = (
+        f"Genera UN dato curioso interesante de la categoría: {categoria}.\n"
+        f"El título NO debe ser igual ni muy similar a ninguno de estos ya enviados: {recientes_str}.\n\n"
+        f"Devuelve SOLO un JSON válido con esta estructura exacta:\n"
+        f'{{"titulo": "Título llamativo máx 8 palabras", '
+        f'"contenido": "Explicación clara en 3-4 frases con números o ejemplos concretos.", '
+        f'"por_que": "1-2 frases sobre el mecanismo o causa profunda.", '
+        f'"categoria": "{categoria}"}}'
+    )
+    try:
+        from groq import Groq
+        import re as _re
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=350,
+            temperature=0.9,
+        )
+        raw = resp.choices[0].message.content.strip()
+        match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if not match:
+            logger.error(f"send_dato_curioso: no JSON en respuesta")
+            return
+        dato = json.loads(match.group())
+        titulo    = dato.get("titulo", "")
+        contenido = dato.get("contenido", "")
+        por_que   = dato.get("por_que", "")
+        cat_out   = dato.get("categoria", categoria)
+
+        _guardar_titulo(titulo, cat_out, slot)
+
+        send_message(
+            f"💡 <b>DATO CURIOSO</b>\n"
+            f"{'─' * 22}\n"
+            f"<b>{titulo.upper()}</b>\n\n"
+            f"{contenido}\n\n"
+            f"🔬 <i>¿Por qué es así?</i>\n"
+            f"{por_que}"
+        )
+    except Exception as e:
+        logger.error(f"send_dato_curioso: {e}")
+
+
+def _send_idea_negocio_diaria():
+    """Genera una idea de negocio con IA y la envía como mensaje nocturno."""
+    xp_state = load_state()
+    existing = []
+    if IS_CLOUD:
+        try:
+            from supabase_client import get_mejoras
+            existing = [m["nombre"] for m in get_mejoras()]
+        except Exception:
+            pass
+    recientes_str = ", ".join(existing[-10:]) if existing else "ninguna"
+
+    prompt = (
+        f"Genera UNA idea de negocio innovadora para un hombre joven con habilidades en tecnología, trading y automatización.\n"
+        f"Ideas recientes ya enviadas (no repetir): {recientes_str}.\n\n"
+        f"Devuelve SOLO un JSON:\n"
+        f'{{"nombre": "Nombre de la idea", '
+        f'"descripcion": "Descripción en 2-3 frases de qué es y cómo funciona.", '
+        f'"inversion": "Estimación de inversión inicial", '
+        f'"tiempo": "Tiempo estimado para primeros ingresos", '
+        f'"potencial": "Potencial de ingresos mensuales estimado"}}'
+    )
+    try:
+        from groq import Groq
+        import re as _re
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+            temperature=0.9,
+        )
+        raw = resp.choices[0].message.content.strip()
+        match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if not match:
+            return
+        idea = json.loads(match.group())
+        send_message(
+            f"🚀 <b>IDEA DE NEGOCIO</b>\n"
+            f"{'─' * 22}\n"
+            f"<b>{idea.get('nombre','').upper()}</b>\n\n"
+            f"{idea.get('descripcion','')}\n\n"
+            f"💰 Inversión: {idea.get('inversion','?')} · "
+            f"⏱️ {idea.get('tiempo','?')}\n"
+            f"🎯 Potencial: {idea.get('potencial','?')}"
+        )
+    except Exception as e:
+        logger.error(f"_send_idea_negocio_diaria: {e}")
+
+
 # ── Recordatorio creatina ──────────────────────────────────────
 def send_creatine_reminder():
     xp_state = load_state()
@@ -1461,6 +1665,169 @@ def handle_intentar_mejora(text: str):
         f"{mejora.get('descripcion','')}\n\n"
         f"Te aparecerá en el dashboard y en el recordatorio diario. ¡Constancia!"
     )
+
+
+# ── Ikigai interactivo ─────────────────────────────────────────
+def _handle_ikigai_step(text: str) -> bool:
+    """Maneja cada respuesta del flujo Ikigai. Devuelve True si estaba activo."""
+    if not _ikigai_conv:
+        return False
+
+    step = _ikigai_conv.get("step", 0)
+    _ikigai_conv["answers"][f"q{step + 1}"] = text.strip()
+    next_step = step + 1
+    _ikigai_conv["step"] = next_step
+
+    if next_step < len(IKIGAI_STEPS):
+        send_message(IKIGAI_STEPS[next_step]["pregunta"])
+    else:
+        send_message(
+            "✨ <b>¡Perfecto! Has completado las 10 preguntas.</b>\n\n"
+            "Ahora analizaré tus respuestas con detalle.\n"
+            "Dame un momento... 🌸"
+        )
+        _generate_ikigai_analysis(_ikigai_conv["answers"].copy())
+        _ikigai_conv.clear()
+
+    return True
+
+
+def _generate_ikigai_analysis(answers: dict):
+    """Llama a Groq con las 10 respuestas y envía 3 mensajes de análisis. Guarda en Obsidian."""
+    import re as _re
+
+    respuestas_str = "\n".join(
+        f"Pregunta {i} ({IKIGAI_STEPS[i-1]['circulo']}): {answers.get(f'q{i}', '')}"
+        for i in range(1, 11)
+    )
+
+    prompt = (
+        "Actúa como un coach de vida experto en el método Ikigai japonés.\n"
+        "Basándote en estas respuestas REALES del usuario:\n\n"
+        f"{respuestas_str}\n\n"
+        "Genera un análisis ikigai profundo y personalizado. "
+        "Devuelve SOLO un JSON válido con esta estructura exacta:\n"
+        '{"lo_que_amas": ["3-4 elementos concretos identificados de sus respuestas"],'
+        '"lo_que_se_te_da_bien": ["3-4 elementos concretos"],'
+        '"lo_que_necesita_el_mundo": ["2-3 elementos concretos"],'
+        '"por_lo_que_te_pueden_pagar": ["2-3 elementos concretos"],'
+        '"ikigai_central": "1-2 frases que definen su propósito único y singular",'
+        '"mision": "Intersección: lo que amas + lo que el mundo necesita (1-2 frases)",'
+        '"vocacion": "Intersección: lo que amas + en lo que eres bueno (1-2 frases)",'
+        '"profesion": "Intersección: en lo que eres bueno + por lo que te pagan (1-2 frases)",'
+        '"pasion": "Intersección: lo que amas + por lo que te pagan (1-2 frases)",'
+        '"pasos_accion": ["3 pasos concretos y específicos que puede hacer esta semana"],'
+        '"reflexion_final": "Párrafo motivador y personalizado de 3-4 frases"}'
+    )
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1200,
+            temperature=0.7,
+        )
+        raw = resp.choices[0].message.content.strip()
+        match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if not match:
+            send_message("❌ No pude generar el análisis. Inténtalo de nuevo con /ikigai.")
+            return
+        data = json.loads(match.group())
+
+        # Mensaje 1 — Los 4 círculos
+        amas  = "\n".join(f"  • {x}" for x in data.get("lo_que_amas", []))
+        bien  = "\n".join(f"  • {x}" for x in data.get("lo_que_se_te_da_bien", []))
+        mundo = "\n".join(f"  • {x}" for x in data.get("lo_que_necesita_el_mundo", []))
+        pagan = "\n".join(f"  • {x}" for x in data.get("por_lo_que_te_pueden_pagar", []))
+        send_message(
+            "🌸 <b>TU IKIGAI — LOS 4 CÍRCULOS</b>\n"
+            f"{'─' * 24}\n\n"
+            f"❤️ <b>Lo que AMAS:</b>\n{amas}\n\n"
+            f"💪 <b>En lo que ERES BUENO:</b>\n{bien}\n\n"
+            f"🌍 <b>Lo que el MUNDO NECESITA:</b>\n{mundo}\n\n"
+            f"💰 <b>Por lo que te PUEDEN PAGAR:</b>\n{pagan}"
+        )
+
+        # Mensaje 2 — Intersecciones + centro
+        send_message(
+            "✨ <b>LAS INTERSECCIONES</b>\n"
+            f"{'─' * 24}\n\n"
+            f"🎯 <b>MISIÓN</b> (amor + mundo):\n{data.get('mision','')}\n\n"
+            f"🎸 <b>VOCACIÓN</b> (amor + habilidad):\n{data.get('vocacion','')}\n\n"
+            f"💼 <b>PROFESIÓN</b> (habilidad + dinero):\n{data.get('profesion','')}\n\n"
+            f"🔥 <b>PASIÓN</b> (amor + dinero):\n{data.get('pasion','')}\n\n"
+            f"{'─' * 24}\n"
+            f"🌟 <b>TU IKIGAI CENTRAL:</b>\n<i>{data.get('ikigai_central','')}</i>"
+        )
+
+        # Mensaje 3 — Pasos + reflexión
+        pasos = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(data.get("pasos_accion", [])))
+        send_message(
+            f"🚀 <b>PASOS DE ACCIÓN PARA ESTA SEMANA</b>\n"
+            f"{'─' * 24}\n\n"
+            f"{pasos}\n\n"
+            f"{'─' * 24}\n"
+            f"💭 <b>Reflexión final:</b>\n<i>{data.get('reflexion_final','')}</i>"
+        )
+
+        # Guardar en Obsidian
+        _save_ikigai_to_obsidian(answers, data)
+
+    except Exception as e:
+        logger.error(f"_generate_ikigai_analysis: {e}")
+        send_message("❌ Error generando el análisis Ikigai. Inténtalo más tarde.")
+
+
+def _save_ikigai_to_obsidian(answers: dict, analysis: dict):
+    """Guarda el resultado del Ikigai en libro-3-planificacion/ del vault."""
+    try:
+        from datetime import date
+        fecha = date.today().strftime("%Y-%m-%d")
+        vault = r"C:\Users\geost\Desktop\Obsidian SC Claude Code"
+        ruta = os.path.join(vault, "libro-3-planificacion", f"ikigai-{fecha}.md")
+
+        amas  = "\n".join(f"- {x}" for x in analysis.get("lo_que_amas", []))
+        bien  = "\n".join(f"- {x}" for x in analysis.get("lo_que_se_te_da_bien", []))
+        mundo = "\n".join(f"- {x}" for x in analysis.get("lo_que_necesita_el_mundo", []))
+        pagan = "\n".join(f"- {x}" for x in analysis.get("por_lo_que_te_pueden_pagar", []))
+        pasos = "\n".join(f"- {p}" for p in analysis.get("pasos_accion", []))
+        preguntas = "\n".join(
+            f"**P{i}** ({IKIGAI_STEPS[i-1]['circulo']}): {answers.get(f'q{i}','')}"
+            for i in range(1, 11)
+        )
+
+        contenido = (
+            f"---\n"
+            f"title: Ikigai — {fecha}\n"
+            f"tags: [\"#ikigai\", \"#proposito\", \"#libro-3\"]\n"
+            f"---\n\n"
+            f"# 🌸 Ikigai — {fecha}\n\n"
+            f"## Los 4 Círculos\n\n"
+            f"### ❤️ Lo que amo\n{amas}\n\n"
+            f"### 💪 En lo que soy bueno\n{bien}\n\n"
+            f"### 🌍 Lo que el mundo necesita\n{mundo}\n\n"
+            f"### 💰 Por lo que me pueden pagar\n{pagan}\n\n"
+            f"## ✨ Intersecciones\n\n"
+            f"**🎯 Misión:** {analysis.get('mision','')}\n\n"
+            f"**🎸 Vocación:** {analysis.get('vocacion','')}\n\n"
+            f"**💼 Profesión:** {analysis.get('profesion','')}\n\n"
+            f"**🔥 Pasión:** {analysis.get('pasion','')}\n\n"
+            f"## 🌟 Ikigai Central\n\n"
+            f"> {analysis.get('ikigai_central','')}\n\n"
+            f"## 🚀 Pasos de Acción\n\n{pasos}\n\n"
+            f"## 📝 Mis Respuestas\n\n{preguntas}\n\n"
+            f"## 🔗 Relacionado\n\n"
+            f"[[metas-{fecha[:4]}]] · [[planificacion-{fecha[:7]}]]\n"
+        )
+
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(contenido)
+        logger.info(f"Ikigai guardado en: {ruta}")
+    except Exception as e:
+        logger.error(f"_save_ikigai_to_obsidian: {e}")
 
 
 def handle_chat_question(text: str):
@@ -1655,6 +2022,9 @@ def main():
     schedule.every().day.at(REMINDER_TIME).do(send_daily_reminder)
     schedule.every().day.at(CREATINE_TIME).do(send_creatine_reminder)
     schedule.every().sunday.at("10:00").do(send_mejora_semanal)
+    schedule.every().day.at(DATO_MAÑANA).do(send_dato_curioso, slot="mañana")
+    schedule.every().day.at(DATO_TARDE).do(send_dato_curioso, slot="tarde")
+    schedule.every().day.at(DATO_NOCHE).do(send_dato_curioso, slot="noche")
 
     import threading
 
