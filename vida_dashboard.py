@@ -185,9 +185,9 @@ c5.metric("🚿 Racha ducha fría",   f"{streak_val(streaks,'ducha_fria')} días
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_lectura, tab_mejoras, tab_chat = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_lectura, tab_mejoras, tab_proposito, tab_chat = st.tabs([
     "⚔️ Perfil RPG", "🏋️ Deporte", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos",
-    "📖 Diario & Ideas", "👨‍👩‍👧 Gastos Familia", "📚 Lectura", "💡 Mejoras", "💬 Chat IA"
+    "📖 Diario & Ideas", "👨‍👩‍👧 Gastos Familia", "📚 Lectura", "💡 Mejoras", "🌸 Propósito", "💬 Chat IA"
 ])
 
 # ════════════════════════════════════════════════════════════════
@@ -1409,6 +1409,110 @@ with tab_mejoras:
         st.progress((racha_creatina - 30) / 30, text=f"2 meses: {racha_creatina - 30}/30 días → próximo: ×2.00")
     else:
         st.success("🔥 ¡Máximo multiplicador desbloqueado! ×2.00 en todos los hábitos")
+
+# ════════════════════════════════════════════════════════════════
+# TAB PROPÓSITO — Ikigai
+# ════════════════════════════════════════════════════════════════
+with tab_proposito:
+    st.subheader("🌸 Tu Propósito — Ikigai")
+    st.caption("El _ikigai_ (生き甲斐) es el concepto japonés de tu \"razón de ser\": la intersección de lo que amas, en lo que eres bueno, lo que el mundo necesita y por lo que te pueden pagar.")
+
+    ikigai_rows = q("ikigai_resultado", order="id", desc=True)
+    ik = ikigai_rows[0] if ikigai_rows else {}
+
+    if not ik:
+        st.info("Todavía no has completado tu Ikigai. Escribe **/ikigai** en Telegram y sigue las 10 preguntas guiadas.")
+    else:
+        fecha_ik = ik.get("fecha", "—")
+        st.caption(f"Último análisis: {fecha_ik}")
+
+        # ── Ikigai central ───────────────────────────────────────
+        ikigai_central = ik.get("ikigai_central", "")
+        if ikigai_central:
+            st.markdown(
+                f"""<div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                border-radius:16px;padding:24px 28px;margin:16px 0;color:white;text-align:center;">
+                <div style="font-size:2em;margin-bottom:8px;">🌟</div>
+                <div style="font-size:1.1em;font-weight:600;line-height:1.5;">{ikigai_central}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+
+        # ── Los 4 círculos ───────────────────────────────────────
+        st.markdown("### Los 4 Círculos")
+        col_a, col_b = st.columns(2)
+        col_c, col_d = st.columns(2)
+
+        def _render_circulo(col, emoji, titulo, color, items):
+            items = items if isinstance(items, list) else ([items] if items else [])
+            with col:
+                st.markdown(
+                    f"""<div style="background:{color};border-radius:12px;padding:16px;min-height:140px;">
+                    <b style="font-size:1.05em;">{emoji} {titulo}</b><br><br>
+                    {"".join(f"• {i}<br>" for i in items)}
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+        _render_circulo(col_a, "❤️", "Lo que AMAS",       "#fff0f3", ik.get("lo_que_amas",     []))
+        _render_circulo(col_b, "💪", "En lo que eres BUENO", "#f0fff4", ik.get("lo_que_bien",  []))
+        _render_circulo(col_c, "🌍", "Lo que el MUNDO NECESITA", "#f0f4ff", ik.get("mundo_necesita",  []))
+        _render_circulo(col_d, "💰", "Por lo que te PUEDEN PAGAR", "#fffbf0", ik.get("te_pueden_pagar", []))
+
+        st.divider()
+
+        # ── Intersecciones ───────────────────────────────────────
+        st.markdown("### ✨ Las 4 Intersecciones")
+        col_m1, col_m2 = st.columns(2)
+        col_m3, col_m4 = st.columns(2)
+
+        def _inter_card(col, emoji, titulo, subtitulo, texto):
+            with col:
+                st.markdown(
+                    f"""<div style="border:1px solid #e0e0e0;border-radius:10px;padding:14px;margin-bottom:4px;">
+                    <b>{emoji} {titulo}</b><br>
+                    <small style="color:#888;">{subtitulo}</small><br><br>
+                    <span style="font-size:0.95em;">{texto}</span>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+        _inter_card(col_m1, "🎯", "MISIÓN",    "amor + mundo",      ik.get("mision", "—"))
+        _inter_card(col_m2, "🎸", "VOCACIÓN",  "amor + habilidad",  ik.get("vocacion", "—"))
+        _inter_card(col_m3, "💼", "PROFESIÓN", "habilidad + dinero", ik.get("profesion", "—"))
+        _inter_card(col_m4, "🔥", "PASIÓN",    "amor + dinero",     ik.get("pasion", "—"))
+
+        st.divider()
+
+        # ── Pasos de acción ──────────────────────────────────────
+        pasos = ik.get("pasos_accion", [])
+        if isinstance(pasos, list) and pasos:
+            st.markdown("### 🚀 Pasos de Acción")
+            for i, paso in enumerate(pasos, 1):
+                st.markdown(f"**{i}.** {paso}")
+
+        # ── Reflexión final ──────────────────────────────────────
+        reflexion = ik.get("reflexion_final", "")
+        if reflexion:
+            st.divider()
+            st.markdown("### 💭 Reflexión Final")
+            st.markdown(f"_{reflexion}_")
+
+        # ── Historial ────────────────────────────────────────────
+        if len(ikigai_rows) > 1:
+            st.divider()
+            with st.expander(f"📅 Historial de análisis ({len(ikigai_rows)} en total)"):
+                for row in ikigai_rows[1:]:
+                    fecha_r = row.get("fecha", "—")
+                    central_r = row.get("ikigai_central", "")
+                    st.markdown(f"**{fecha_r}** — _{central_r}_")
+
+        # ── CTA Telegram ─────────────────────────────────────────
+        st.divider()
+        st.info("💡 Para actualizar tu Ikigai escribe **/ikigai** en Telegram y sigue las 10 preguntas guiadas.")
+
 
 # ════════════════════════════════════════════════════════════════
 # TAB CHAT IA — Conversación libre con contexto del sistema de vida

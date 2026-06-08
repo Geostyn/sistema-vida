@@ -408,6 +408,53 @@ def get_recomendacion_semana() -> dict:
         return {}
 
 
+# ── Ikigai resultado ─────────────────────────────────────────
+
+def save_ikigai_resultado(analysis: dict, respuestas_raw: dict = None) -> bool:
+    try:
+        import json as _json
+        payload = {
+            "lo_que_amas":     _json.dumps(analysis.get("lo_que_amas", []),     ensure_ascii=False),
+            "lo_que_bien":     _json.dumps(analysis.get("lo_que_se_te_da_bien", []), ensure_ascii=False),
+            "mundo_necesita":  _json.dumps(analysis.get("lo_que_necesita_el_mundo", []), ensure_ascii=False),
+            "te_pueden_pagar": _json.dumps(analysis.get("por_lo_que_te_pueden_pagar", []), ensure_ascii=False),
+            "ikigai_central":  analysis.get("ikigai_central", ""),
+            "mision":          analysis.get("mision", ""),
+            "vocacion":        analysis.get("vocacion", ""),
+            "profesion":       analysis.get("profesion", ""),
+            "pasion":          analysis.get("pasion", ""),
+            "pasos_accion":    _json.dumps(analysis.get("pasos_accion", []),     ensure_ascii=False),
+            "reflexion_final": analysis.get("reflexion_final", ""),
+            "respuestas_raw":  _json.dumps(respuestas_raw or {},                  ensure_ascii=False),
+        }
+        get_client().table("ikigai_resultado").insert(payload).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase save_ikigai_resultado: {e}")
+        return False
+
+
+def get_ikigai_ultimo() -> dict:
+    """Devuelve el ikigai más reciente guardado."""
+    try:
+        import json as _json
+        r = get_client().table("ikigai_resultado").select("*").order("id", desc=True).limit(1).execute()
+        if not r.data:
+            return {}
+        row = r.data[0]
+        # Deserializar los campos JSON
+        for campo in ("lo_que_amas", "lo_que_bien", "mundo_necesita", "te_pueden_pagar", "pasos_accion", "respuestas_raw"):
+            if isinstance(row.get(campo), str):
+                try:
+                    row[campo] = _json.loads(row[campo])
+                except Exception:
+                    pass
+        return row
+    except Exception as e:
+        logger.error(f"Supabase get_ikigai_ultimo: {e}")
+        return {}
+
+
 # ── Resumen de estado para el bot ────────────────────────────
 
 def get_vida_state_summary() -> str:

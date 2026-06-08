@@ -1772,8 +1772,14 @@ def _generate_ikigai_analysis(answers: dict):
             f"💭 <b>Reflexión final:</b>\n<i>{data.get('reflexion_final','')}</i>"
         )
 
-        # Guardar en Obsidian
+        # Guardar en Obsidian y Supabase
         _save_ikigai_to_obsidian(answers, data)
+        if IS_CLOUD:
+            try:
+                from supabase_client import save_ikigai_resultado
+                save_ikigai_resultado(data, answers)
+            except Exception as _e:
+                logger.error(f"save_ikigai_resultado: {_e}")
 
     except Exception as e:
         logger.error(f"_generate_ikigai_analysis: {e}")

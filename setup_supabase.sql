@@ -238,7 +238,27 @@ create table if not exists datos_enviados (
 );
 alter table datos_enviados disable row level security;
 
--- ✅ Verificación: debería mostrar 14 tablas
+-- 15. Resultado del Ikigai
+create table if not exists ikigai_resultado (
+  id              bigserial primary key,
+  fecha           date not null default current_date,
+  lo_que_amas     jsonb,
+  lo_que_bien     jsonb,
+  mundo_necesita  jsonb,
+  te_pueden_pagar jsonb,
+  ikigai_central  text,
+  mision          text,
+  vocacion        text,
+  profesion       text,
+  pasion          text,
+  pasos_accion    jsonb,
+  reflexion_final text,
+  respuestas_raw  jsonb,
+  created_at      timestamptz default now()
+);
+alter table ikigai_resultado disable row level security;
+
+-- ✅ Verificación: debería mostrar 15 tablas
 select table_name from information_schema.tables
 where table_schema = 'public'
 order by table_name;
