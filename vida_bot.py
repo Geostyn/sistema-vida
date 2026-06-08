@@ -65,7 +65,7 @@ except Exception as _lt_err:
     add_trading_reflexion = add_diario_entry = lambda *a, **kw: False
 from vida_xp import (
     load_state, save_state, award_xp, update_streak,
-    increment_counter, check_achievements,
+    increment_counter, check_achievements, get_streak_multiplier,
     update_profile_file, get_xp_summary, xp_to_level, overall_level, SKILLS
 )
 
@@ -85,6 +85,7 @@ PLAYER_NAME     = os.environ.get("PLAYER_NAME")     or cfg.get("vida_bot", {}).g
 GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")    or cfg.get("groq", {}).get("api_key", "")
 GROQ_MODEL      = os.environ.get("GROQ_MODEL")      or cfg.get("groq", {}).get("model", "llama-3.3-70b-versatile")
 REMINDER_TIME   = os.environ.get("REMINDER_TIME")   or cfg.get("vida_bot", {}).get("reminder_time", "21:00")
+CREATINE_TIME   = os.environ.get("CREATINE_TIME")   or cfg.get("vida_bot", {}).get("creatine_time", "09:00")
 
 # Cloud mode: activo cuando Supabase está configurado (Fly.io)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -100,6 +101,7 @@ SSL_VERIFY     = False
 TELEGRAM_API   = f"https://api.telegram.org/bot{BOT_TOKEN}"
 last_update_id = 0
 last_entry_date = None
+_last_recommended_mejora: dict = {}
 
 # ── Perfil nutricional ─────────────────────────────────────────
 PROFILE_STEPS = [
@@ -411,7 +413,7 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
     "ingresos": [{"categoria": "", "concepto": "", "importe": 0.0}],
     "ideas": [{"idea": "", "inversion": "", "tiempo": "", "potencial": ""}],
     "trading": {"observacion": "", "tipo": "💡", "accion": ""},
-    "habitos": {"ducha_fria": false, "te_clavo": false, "oracion": false, "silencio": false},
+    "habitos": {"ducha_fria": false, "te_clavo": false, "oracion": false, "silencio": false, "creatina": false},
     "diario": {"lo_importante": "", "gratitud": "", "mejora": "", "habitos_ok": ""}
   },
   "responses": {
@@ -636,37 +638,36 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
 
     habitos = updates.get("habitos", {})
     all_habits_done = True
-    if habitos.get("ducha_fria"):
-        result = award_xp("ducha_fria", xp_state)
+
+    def _award_habit(action_key: str, streak_key: str):
+        nonlocal xp_state
+        streak = xp_state.get("streaks", {}).get(streak_key, 0)
+        result = award_xp(action_key, xp_state, streak_days=streak)
         xp_messages.extend(result["messages"])
         xp_state = result["state"]
-        update_streak("ducha_fria", True, xp_state)
+        update_streak(streak_key, True, xp_state)
         xp_state = load_state()
+
+    if habitos.get("ducha_fria"):
+        _award_habit("ducha_fria", "ducha_fria")
     else:
         all_habits_done = False
 
     if habitos.get("te_clavo"):
-        result = award_xp("te_clavo", xp_state)
-        xp_messages.extend(result["messages"])
-        xp_state = result["state"]
-        update_streak("te_clavo", True, xp_state)
-        xp_state = load_state()
+        _award_habit("te_clavo", "te_clavo")
     else:
         all_habits_done = False
 
     if habitos.get("oracion"):
-        result = award_xp("oracion_cumplida", xp_state)
-        xp_messages.extend(result["messages"])
-        xp_state = result["state"]
-        update_streak("oracion", True, xp_state)
-        xp_state = load_state()
+        _award_habit("oracion_cumplida", "oracion")
     else:
         all_habits_done = False
 
     if habitos.get("silencio"):
-        result = award_xp("silencio_cumplido", xp_state)
-        xp_messages.extend(result["messages"])
-        xp_state = result["state"]
+        _award_habit("silencio_cumplido", "silencio")
+
+    if habitos.get("creatina"):
+        _award_habit("creatina_cumplida", "creatina")
 
     if all_habits_done and any(habitos.values()):
         update_streak("habitos_todos", True, xp_state)
@@ -693,6 +694,7 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
         sb.insert_habitos(
             habitos.get("ducha_fria", False), habitos.get("te_clavo", False),
             habitos.get("oracion", False),    habitos.get("silencio", False),
+            habitos.get("creatina", False),
         )
 
     # Comprobar logros pendientes
@@ -752,13 +754,18 @@ def process_message(text: str):
             f"⚔️ Tu nivel actual: <b>{ov_level} — {ov_name}</b> · {xp_state['total_xp']:,} XP\n\n"
             "Cuéntame tu día y lo organizo todo + te doy XP:\n"
             "• Lo que comiste 🍽️ · Tu entreno 💪 · Gastos 💶\n"
-            "• Hábitos cumplidos ✅ · Ideas de negocio 💡\n"
-            "• Reflexiones ✝️🙏\n\n"
+            "• Hábitos ✅ · Creatina 💊 · Ideas 💡 · Reflexiones ✝️🙏\n\n"
             "<b>Comandos:</b>\n"
             "/perfil — Tu ficha de personaje y XP\n"
             "/logros — Ver logros desbloqueados\n"
+            "/mejoras — Ver mejoras en proceso\n"
+            "/recomendar — Recibir nueva mejora de la semana\n"
             "/reto — Retar a tus amigos en el grupo\n"
-            "/estado — Estado del sistema de vida"
+            "/estado — Estado del sistema de vida\n\n"
+            "<b>Atajos:</b>\n"
+            "<code>creatina ✅</code> — Registrar creatina del día\n"
+            "<code>quiero intentarlo</code> — Añadir mejora recomendada a tus hábitos\n"
+            "<code>? tu pregunta</code> — Modo chat libre (sin guardar datos)"
         )
         return
 
@@ -836,6 +843,68 @@ def process_message(text: str):
         if len(state) > 3000:
             state = state[:3000] + "\n...(truncado)"
         send_message(f"<b>Estado del Sistema de Vida:</b>\n\n<pre>{state}</pre>")
+        return
+
+    if lower in ["/mejoras", "/mejora"]:
+        if not IS_CLOUD:
+            send_message("⚠️ /mejoras requiere modo cloud.")
+            return
+        from supabase_client import get_mejoras
+        activas   = get_mejoras("activa")
+        en_proceso = get_mejoras("en_proceso")
+        xp_state  = load_state()
+        streaks   = xp_state.get("streaks", {})
+        lines = ["💡 <b>TUS MEJORAS</b>\n" + "─" * 22]
+        if en_proceso:
+            lines.append("\n🔄 <b>En proceso:</b>")
+            for m in en_proceso:
+                dias = (datetime.now().date() - __import__("datetime").date.fromisoformat(m["fecha_inicio"])).days if m.get("fecha_inicio") else 0
+                lines.append(f"  • {m['nombre']} <i>({dias}d)</i>")
+        if activas:
+            lines.append("\n✅ <b>Activas (consolidadas):</b>")
+            for m in activas:
+                lines.append(f"  • {m['nombre']}")
+        if not en_proceso and not activas:
+            lines.append("\n<i>No tienes mejoras en proceso todavía.</i>")
+            lines.append("Escribe /recomendar para recibir una.")
+        lines.append(f"\n💊 Racha creatina: <b>{streaks.get('creatina', 0)} días</b>")
+        send_message("\n".join(lines))
+        return
+
+    if lower in ["/recomendar", "/mejora nueva"]:
+        send_mejora_semanal()
+        return
+
+    # Detectar "quiero intentarlo"
+    _INTENTAR = ["quiero intentarlo", "quiero intentar", "me apunto", "voy a intentar", "lo voy a intentar"]
+    if any(p in lower for p in _INTENTAR):
+        handle_intentar_mejora(text)
+        return
+
+    # Detectar pregunta directa (modo chat libre sin extracción de datos)
+    _CHAT_PREFIXES = ("? ", "pregunta:", "/pregunta ", "dime ", "explícame ", "explicame ", "qué es ", "que es ")
+    if lower.startswith(_CHAT_PREFIXES) or lower.startswith("?"):
+        question = text.lstrip("?").strip()
+        if question:
+            handle_chat_question(question)
+            return
+
+    # Detectar registro de creatina directo (sin necesitar al AI)
+    _CREATINA_KEYS = ["creatina ✅", "creatina ok", "tomé creatina", "tome creatina", "creatina tomada", "creatina sí", "creatina si"]
+    if any(k in lower for k in _CREATINA_KEYS):
+        xp_state = load_state()
+        racha = xp_state.get("streaks", {}).get("creatina", 0)
+        result = award_xp("creatina_cumplida", xp_state, streak_days=racha)
+        update_streak("creatina", True, result["state"])
+        xp_state = load_state()
+        if IS_CLOUD:
+            from supabase_client import sync_xp_to_supabase
+            sync_xp_to_supabase(os.path.join(SCRIPT_DIR, "vida_xp.json"))
+        send_message(
+            f"💊 <b>Creatina registrada</b> ✅\n"
+            f"{''.join(result['messages'])}\n"
+            f"🔥 Racha: <b>{xp_state['streaks'].get('creatina', 0)} días</b>"
+        )
         return
 
     # Procesar mensaje libre con IA
@@ -1272,6 +1341,164 @@ def _send_family_savings_tip(chat_id: str):
         send_message("❌ No pude generar las recomendaciones ahora.", chat_id=chat_id)
 
 
+# ── Recordatorio creatina ──────────────────────────────────────
+def send_creatine_reminder():
+    xp_state = load_state()
+    racha = xp_state.get("streaks", {}).get("creatina", 0)
+    mult  = get_streak_multiplier(racha)
+    mult_txt = f" · multiplicador XP: ×{mult:.2f}" if mult > 1.0 else ""
+    send_message(
+        f"💊 <b>¡Hora de la creatina!</b>\n"
+        f"Toma 5g de creatina monohidrato con el desayuno.\n"
+        f"🔥 Racha: <b>{racha} días</b>{mult_txt}\n\n"
+        f"Responde <code>creatina ✅</code> para ganar XP y sumar a tu racha."
+    )
+
+
+# ── Mejoras: recomendación generada por IA ─────────────────────
+def _generate_mejora_ai() -> dict:
+    """Pide a Groq una nueva mejora personalizada basada en el perfil y lo que ya tiene."""
+    xp_state = load_state()
+    streaks  = xp_state.get("streaks", {})
+
+    existing_names = []
+    if IS_CLOUD:
+        try:
+            from supabase_client import get_mejoras
+            existing_names = [m["nombre"] for m in get_mejoras()]
+        except Exception:
+            pass
+
+    existing_str = ", ".join(existing_names) if existing_names else "ninguna todavía"
+    ducha_racha   = streaks.get("ducha_fria", 0)
+    creatina_racha = streaks.get("creatina", 0)
+
+    prompt = (
+        f"El usuario es un hombre joven con objetivo de ganar masa muscular.\n"
+        f"Hábitos actuales: ducha fría ({ducha_racha} días de racha), "
+        f"té de clavo, oración diaria, creatina ({creatina_racha} días).\n"
+        f"Mejoras que ya tiene registradas: {existing_str}.\n\n"
+        f"Genera UNA nueva mejora de bienestar que NO esté en esa lista. "
+        f"Puede ser de cualquier área: testosterona, recuperación, sueño, estrés, "
+        f"enfoque, nutrición, salud hormonal, bienestar mental, rendimiento físico...\n\n"
+        f"Devuelve SOLO un JSON válido con esta estructura exacta:\n"
+        f'{{"nombre": "...", "categoria": "testosterona|estres|recuperacion|sueno|enfoque", '
+        f'"descripcion": "instrucción práctica en 1-2 frases", '
+        f'"evidencia": "explicación científica con datos reales en 2-3 frases"}}'
+    )
+
+    try:
+        from groq import Groq
+        import re as _re
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.85,
+        )
+        text = resp.choices[0].message.content.strip()
+        match = _re.search(r'\{.*\}', text, _re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except Exception as e:
+        logger.error(f"_generate_mejora_ai: {e}")
+    return {}
+
+
+def send_mejora_semanal():
+    global _last_recommended_mejora
+    send_message("🤖 Generando tu recomendación personalizada...")
+    mejora = _generate_mejora_ai()
+    if not mejora:
+        send_message("❌ No pude generar la recomendación. Inténtalo de nuevo con /recomendar.")
+        return
+
+    # Guardar en Supabase para que aparezca en el dashboard
+    if IS_CLOUD:
+        try:
+            from supabase_client import insert_mejora
+            saved = insert_mejora(
+                mejora["nombre"], mejora.get("categoria", "enfoque"),
+                mejora.get("descripcion", ""), mejora.get("evidencia", ""),
+            )
+            mejora["id"] = saved.get("id")
+        except Exception as e:
+            logger.error(f"send_mejora_semanal insert: {e}")
+
+    _last_recommended_mejora = mejora
+    cat_emoji = {
+        "testosterona": "⚡", "estres": "🧘", "recuperacion": "💪",
+        "sueno": "😴", "enfoque": "🎯",
+    }.get(mejora.get("categoria", ""), "💡")
+    send_message(
+        f"💡 <b>MEJORA DE LA SEMANA</b>\n"
+        f"{'─' * 22}\n"
+        f"{cat_emoji} <b>{mejora['nombre']}</b> "
+        f"[{mejora.get('categoria','').upper()}]\n\n"
+        f"{mejora.get('descripcion','')}\n\n"
+        f"🔬 <b>¿Por qué funciona?</b>\n"
+        f"<i>{mejora.get('evidencia','')}</i>\n\n"
+        f"Si quieres intentarlo escribe: <code>quiero intentarlo</code>"
+    )
+
+
+def handle_intentar_mejora(text: str):
+    global _last_recommended_mejora
+    if not IS_CLOUD:
+        send_message("⚠️ Esta función requiere modo cloud (Supabase).")
+        return
+    from supabase_client import update_mejora_estado
+    mejora = _last_recommended_mejora
+    if not mejora or not mejora.get("id"):
+        send_message("Escribe /recomendar primero para recibir una mejora nueva.")
+        return
+    update_mejora_estado(mejora["id"], "en_proceso", datetime.now().date().isoformat())
+    _last_recommended_mejora = {}
+    send_message(
+        f"✅ <b>¡Añadida a tus mejoras en proceso!</b>\n"
+        f"💡 <b>{mejora['nombre']}</b>\n\n"
+        f"{mejora.get('descripcion','')}\n\n"
+        f"Te aparecerá en el dashboard y en el recordatorio diario. ¡Constancia!"
+    )
+
+
+def handle_chat_question(text: str):
+    """Modo conversacional libre — no extrae datos, solo responde la pregunta."""
+    try:
+        context = ""
+        if IS_CLOUD:
+            from supabase_client import get_vida_state_summary
+            context = get_vida_state_summary()
+        else:
+            context = "Sistema en modo local."
+
+        system_prompt = (
+            f"Eres el asistente personal de {PLAYER_NAME}, experto en su Sistema de Vida.\n"
+            f"Estado actual del sistema:\n{context}\n\n"
+            "Responde en español, de forma directa y útil. "
+            "Si pregunta sobre sus datos, úsalos. "
+            "Si da consejos de salud o fitness, fundamenta con evidencia científica. "
+            "Sé amigable y motivador. Usa HTML Telegram (<b>, <i>) para formatear."
+        )
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": text},
+            ],
+            max_tokens=600,
+            temperature=0.7,
+        )
+        answer = resp.choices[0].message.content.strip()
+        send_message(f"🤖 <b>Asistente IA</b>\n{'─' * 22}\n{answer}")
+    except Exception as e:
+        logger.error(f"handle_chat_question: {e}")
+        send_message("❌ Error al procesar la pregunta. Inténtalo de nuevo.")
+
+
 # ── Recordatorio diario ────────────────────────────────────────
 def send_daily_reminder():
     global last_entry_date
@@ -1279,6 +1506,23 @@ def send_daily_reminder():
     if last_entry_date != today:
         xp_state  = load_state()
         ov_level, ov_name = overall_level(xp_state)
+        streaks = xp_state.get("streaks", {})
+
+        # Construir línea de mejoras activas
+        mejoras_linea = ""
+        if IS_CLOUD:
+            try:
+                from supabase_client import get_mejoras
+                activas = get_mejoras("activa") + get_mejoras("en_proceso")
+                if activas:
+                    nombres = " · ".join(m["nombre"] for m in activas[:3])
+                    mejoras_linea = f"• Mejoras en proceso: {nombres}\n"
+            except Exception:
+                pass
+
+        racha_creatina = streaks.get("creatina", 0)
+        creatina_linea = f"• Creatina 💊 (racha: {racha_creatina}d)\n" if racha_creatina >= 0 else ""
+
         send_message(
             f"🔔 <b>Recordatorio del sistema de vida</b>\n\n"
             f"⚔️ Nivel {ov_level} — {ov_name} | {xp_state['total_xp']:,} XP\n\n"
@@ -1287,6 +1531,8 @@ def send_daily_reminder():
             "• Si entrenaste 💪\n"
             "• Gastos del día 💶\n"
             "• Hábitos: ducha fría 🚿, té clavo 🌿, oración 🙏\n"
+            f"{creatina_linea}"
+            f"{mejoras_linea}"
             "• Algo que agradeces ✨\n\n"
             "<i>Cada acción te da XP. ¡El nivel no para de subir!</i>"
         )
@@ -1407,6 +1653,8 @@ def main():
     ov_level, ov_name = overall_level(xp_state)
 
     schedule.every().day.at(REMINDER_TIME).do(send_daily_reminder)
+    schedule.every().day.at(CREATINE_TIME).do(send_creatine_reminder)
+    schedule.every().sunday.at("10:00").do(send_mejora_semanal)
 
     import threading
 

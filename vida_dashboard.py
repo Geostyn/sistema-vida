@@ -3,6 +3,7 @@ Dashboard del Sistema de Vida — Streamlit Community Cloud
 Usa REST directo a Supabase (sin supabase-py) para máxima compatibilidad.
 """
 import os
+import json
 import requests
 import streamlit as st
 import plotly.graph_objects as go
@@ -18,14 +19,39 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+/* Desktop base */
 div[data-testid="stMetric"] { background:#1e2130; border-radius:10px; padding:14px; }
 .stTabs [data-baseweb="tab"] { font-size:15px; }
+
+/* ── Mobile responsive ── */
+@media (max-width: 768px) {
+  /* Reducir padding del contenedor principal */
+  .block-container { padding: 0.6rem 0.6rem 1rem !important; max-width: 100% !important; }
+  /* Ocultar sidebar en móvil */
+  section[data-testid="stSidebar"] { display: none !important; }
+  /* Encabezados más compactos */
+  h1 { font-size: 1.3rem !important; }
+  h2 { font-size: 1.1rem !important; }
+  h3 { font-size: 1rem !important; }
+  /* Tabs horizontales con scroll en móvil */
+  .stTabs [data-baseweb="tab-list"] { overflow-x: auto; flex-wrap: nowrap; }
+  .stTabs [data-baseweb="tab"] { font-size: 12px !important; padding: 6px 10px !important; white-space: nowrap; }
+  /* Botones touch-friendly */
+  .stButton > button { min-height: 44px !important; font-size: 0.95rem !important; width: 100%; }
+  /* Métricas sin truncar */
+  div[data-testid="stMetric"] { padding: 8px !important; }
+  div[data-testid="stMetricValue"] { font-size: 1.2rem !important; }
+  /* Chat input siempre visible */
+  div[data-testid="stChatInput"] { position: sticky; bottom: 0; background: #0e1117; padding: 6px; }
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ── Credenciales ──────────────────────────────────────────────
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
+GROQ_MODEL   = os.environ.get("GROQ_MODEL")   or st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit.")
@@ -159,8 +185,9 @@ c5.metric("🚿 Racha ducha fría",   f"{streak_val(streaks,'ducha_fria')} días
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_lectura = st.tabs([
-    "⚔️ Perfil RPG", "🏋️ Deporte", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos", "📖 Diario & Ideas", "👨‍👩‍👧 Gastos Familia", "📚 Lectura"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_lectura, tab_mejoras, tab_chat = st.tabs([
+    "⚔️ Perfil RPG", "🏋️ Deporte", "🔥 Hábitos", "🍽️ Nutrición", "💶 Gastos",
+    "📖 Diario & Ideas", "👨‍👩‍👧 Gastos Familia", "📚 Lectura", "💡 Mejoras", "💬 Chat IA"
 ])
 
 # ════════════════════════════════════════════════════════════════
@@ -1208,3 +1235,273 @@ with tab_lectura:
         },
         hide_index=True, use_container_width=True,
     )
+
+# ════════════════════════════════════════════════════════════════
+# TAB MEJORAS — Sistema de recomendaciones científicas
+# ════════════════════════════════════════════════════════════════
+
+def _sb_update_mejora(mejora_id: int, estado: str, fecha_inicio: str = None):
+    payload = {"estado": estado}
+    if fecha_inicio:
+        payload["fecha_inicio"] = fecha_inicio
+    headers = {**_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"}
+    requests.patch(
+        f"{_base_url()}/rest/v1/mejoras?id=eq.{mejora_id}",
+        json=payload, headers=headers, timeout=10,
+    )
+
+
+CAT_EMOJI = {
+    "testosterona": "⚡", "estres": "🧘", "recuperacion": "💪",
+    "sueno": "😴", "enfoque": "🎯",
+}
+
+with tab_mejoras:
+    st.subheader("💡 Mejoras de Bienestar")
+    st.caption("Recomendaciones basadas en evidencia científica. Ve añadiéndolas a tu rutina.")
+
+    mejoras_data = q("mejoras", order="id")
+
+    en_proceso   = [m for m in mejoras_data if m.get("estado") in ("en_proceso", "activa")]
+    recomendadas = [m for m in mejoras_data if m.get("estado") == "recomendada"]
+    completadas  = [m for m in mejoras_data if m.get("estado") == "completada"]
+
+    # ── Mejoras en proceso ───────────────────────────────────────
+    if en_proceso:
+        st.markdown("### 🔄 En proceso")
+        n_cols = min(len(en_proceso), 3)
+        cols_ep = st.columns(n_cols)
+        for idx, m in enumerate(en_proceso):
+            with cols_ep[idx % n_cols]:
+                dias = 0
+                if m.get("fecha_inicio"):
+                    try:
+                        dias = (date.today() - date.fromisoformat(m["fecha_inicio"])).days
+                    except Exception:
+                        pass
+                cat_e = CAT_EMOJI.get(m.get("categoria", ""), "💡")
+                estado_badge = "✅ Activa" if m["estado"] == "activa" else "🔄 En proceso"
+                st.markdown(
+                    f"**{cat_e} {m['nombre']}**  \n"
+                    f"{estado_badge} · {dias} días  \n"
+                    f"<small>{m.get('descripcion','')}</small>",
+                    unsafe_allow_html=True,
+                )
+                with st.expander("🔬 Evidencia científica"):
+                    st.write(m.get("evidencia", "—"))
+                if m["estado"] == "en_proceso":
+                    if st.button("✅ Marcar como activa", key=f"activa_{m['id']}"):
+                        _sb_update_mejora(m["id"], "activa")
+                        st.success("¡Consolidada como hábito activo!")
+                        st.rerun()
+                if st.button("🏁 Completar", key=f"completar_{m['id']}"):
+                    _sb_update_mejora(m["id"], "completada")
+                    st.success("¡Completada!")
+                    st.rerun()
+        st.divider()
+
+    # ── Generar nueva recomendación con IA ───────────────────────
+    st.markdown("### 🤖 Nueva recomendación IA")
+    st.caption("La IA analiza tu perfil y lo que ya tienes para sugerirte algo nuevo y personalizado.")
+
+    if st.button("✨ Generar recomendación personalizada", use_container_width=True):
+        if not GROQ_API_KEY:
+            st.error("Añade GROQ_API_KEY en los secrets de Streamlit.")
+        else:
+            with st.spinner("Pensando en algo nuevo para ti..."):
+                existing_names = [m["nombre"] for m in mejoras_data]
+                existing_str = ", ".join(existing_names) if existing_names else "ninguna todavía"
+                racha_ducha = streak_val(streaks, "ducha_fria")
+                racha_creatina_gen = streak_val(streaks, "creatina")
+                prompt_gen = (
+                    f"El usuario es un hombre joven con objetivo de ganar masa muscular.\n"
+                    f"Hábitos actuales: ducha fría ({racha_ducha}d), té de clavo, oración, "
+                    f"creatina ({racha_creatina_gen}d).\n"
+                    f"Mejoras que ya tiene: {existing_str}.\n\n"
+                    f"Genera UNA nueva mejora de bienestar que NO esté en esa lista. "
+                    f"Puede ser de cualquier área: testosterona, recuperación, sueño, estrés, "
+                    f"enfoque, nutrición, salud hormonal, rendimiento físico...\n\n"
+                    f'Devuelve SOLO un JSON: {{"nombre": "...", "categoria": "testosterona|estres|recuperacion|sueno|enfoque", '
+                    f'"descripcion": "instrucción práctica 1-2 frases", '
+                    f'"evidencia": "explicación científica con datos reales 2-3 frases"}}'
+                )
+                try:
+                    import re as _re
+                    resp_gen = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                        json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt_gen}],
+                              "max_tokens": 400, "temperature": 0.85},
+                        timeout=30,
+                    )
+                    resp_gen.raise_for_status()
+                    raw = resp_gen.json()["choices"][0]["message"]["content"].strip()
+                    match_gen = _re.search(r'\{.*\}', raw, _re.DOTALL)
+                    if match_gen:
+                        nueva = json.loads(match_gen.group())
+                        st.session_state["nueva_mejora_ai"] = nueva
+                    else:
+                        st.error("No pude parsear la respuesta. Intenta de nuevo.")
+                except Exception as e_gen:
+                    st.error(f"Error: {e_gen}")
+
+    if "nueva_mejora_ai" in st.session_state:
+        nueva = st.session_state["nueva_mejora_ai"]
+        cat_e2 = CAT_EMOJI.get(nueva.get("categoria", ""), "💡")
+        st.success(f"**{cat_e2} {nueva['nombre']}** [{nueva.get('categoria','').upper()}]")
+        st.write(nueva.get("descripcion", ""))
+        with st.expander("🔬 Evidencia científica"):
+            st.write(nueva.get("evidencia", ""))
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("➕ Añadir a mis mejoras", use_container_width=True):
+                ok = sb_insert("mejoras", {
+                    "nombre": nueva["nombre"],
+                    "categoria": nueva.get("categoria", "enfoque"),
+                    "descripcion": nueva.get("descripcion", ""),
+                    "evidencia": nueva.get("evidencia", ""),
+                    "estado": "en_proceso",
+                    "fecha_inicio": TODAY,
+                })
+                if ok:
+                    del st.session_state["nueva_mejora_ai"]
+                    st.success("✅ Añadida a tus mejoras en proceso.")
+                    st.rerun()
+        with col_btn2:
+            if st.button("🔄 Generar otra", use_container_width=True):
+                del st.session_state["nueva_mejora_ai"]
+                st.rerun()
+
+    # ── Mejoras guardadas disponibles (recomendadas antiguas) ────
+    if recomendadas:
+        st.divider()
+        st.markdown("### 📋 Recomendaciones guardadas")
+        for m in recomendadas:
+            with st.expander(f"{CAT_EMOJI.get(m.get('categoria',''),'💡')} {m['nombre']}"):
+                st.write(m.get("descripcion", ""))
+                st.markdown(f"🔬 **¿Por qué funciona?**  \n_{m.get('evidencia', '')}_")
+                if st.button("➕ Quiero intentarlo", key=f"intentar_{m['id']}"):
+                    _sb_update_mejora(m["id"], "en_proceso", TODAY)
+                    st.success(f"✅ **{m['nombre']}** añadida a tus mejoras en proceso.")
+                    st.rerun()
+
+    # ── Completadas ──────────────────────────────────────────────
+    if completadas:
+        with st.expander(f"🏆 Completadas ({len(completadas)})"):
+            for m in completadas:
+                st.markdown(f"✅ ~~{m['nombre']}~~")
+
+    # ── Racha creatina ───────────────────────────────────────────
+    st.divider()
+    racha_creatina = streak_val(streaks, "creatina")
+    col_cr1, col_cr2 = st.columns(2)
+    col_cr1.metric("💊 Racha Creatina", f"{racha_creatina} días")
+    STREAK_MULTS = [(60, 2.0), (30, 1.75), (14, 1.5), (7, 1.25), (0, 1.0)]
+    mult_cr = next((m for t, m in STREAK_MULTS if racha_creatina >= t), 1.0)
+    col_cr2.metric("⚡ Multiplicador XP actual", f"×{mult_cr:.2f}")
+    if racha_creatina < 7:
+        st.progress(racha_creatina / 7, text=f"1ª semana: {racha_creatina}/7 días → próximo: ×1.25")
+    elif racha_creatina < 14:
+        st.progress((racha_creatina - 7) / 7, text=f"2ª semana: {racha_creatina - 7}/7 días → próximo: ×1.50")
+    elif racha_creatina < 30:
+        st.progress((racha_creatina - 14) / 16, text=f"Primer mes: {racha_creatina - 14}/16 días → próximo: ×1.75")
+    elif racha_creatina < 60:
+        st.progress((racha_creatina - 30) / 30, text=f"2 meses: {racha_creatina - 30}/30 días → próximo: ×2.00")
+    else:
+        st.success("🔥 ¡Máximo multiplicador desbloqueado! ×2.00 en todos los hábitos")
+
+# ════════════════════════════════════════════════════════════════
+# TAB CHAT IA — Conversación libre con contexto del sistema de vida
+# ════════════════════════════════════════════════════════════════
+
+def _build_life_context() -> str:
+    try:
+        nivel_c = nivel_nombre(xp_data.get("total_xp", 0))
+        streaks_c = xp_data.get("streaks", {})
+
+        hab_mes = q("habitos", filters={"fecha": f"gte.{MONTH_START}"})
+        dias_mes = max(1, len(hab_mes))
+        hab_pct = {}
+        for hab in ["ducha_fria", "te_clavo", "oracion", "creatina"]:
+            count = sum(1 for r in hab_mes if r.get(hab))
+            hab_pct[hab] = f"{count}/{dias_mes}"
+
+        alim_hoy = q("alimentacion", filters={"fecha": f"eq.{TODAY}"})
+        kcal_hoy = sum(float(r.get("kcal") or 0) for r in alim_hoy)
+        prot_hoy = sum(float(r.get("prot_g") or 0) for r in alim_hoy)
+
+        mej_all = q("mejoras")
+        mej_activas = [m["nombre"] for m in mej_all if m.get("estado") in ("activa", "en_proceso")]
+
+        return (
+            f"Nivel: {nivel_c} ({xp_data.get('total_xp', 0):,} XP) | "
+            f"Rachas: ducha={streak_val(streaks_c,'ducha_fria')}d "
+            f"oracion={streak_val(streaks_c,'oracion')}d "
+            f"creatina={streak_val(streaks_c,'creatina')}d | "
+            f"Hábitos este mes: ducha={hab_pct.get('ducha_fria','?')} "
+            f"oracion={hab_pct.get('oracion','?')} "
+            f"creatina={hab_pct.get('creatina','?')} | "
+            f"Macros hoy: {kcal_hoy:.0f} kcal / {prot_hoy:.0f}g prot | "
+            f"Mejoras activas: {', '.join(mej_activas) or 'ninguna'}"
+        )
+    except Exception:
+        return "Estado no disponible."
+
+
+def _call_groq_chat(prompt: str, context: str, history: list) -> str:
+    if not GROQ_API_KEY:
+        return "⚠️ Configura GROQ_API_KEY en los secrets de Streamlit para usar el chat IA."
+    system_prompt = (
+        "Eres el asistente personal de Geostyn, experto en su Sistema de Vida.\n"
+        f"Estado actual: {context}\n\n"
+        "Responde en español de forma directa y útil. "
+        "Si el usuario pregunta sobre sus datos, úsalos. "
+        "Si das consejos de salud o fitness, fundamenta con evidencia. "
+        "Sé amigable y motivador. Máximo 250 palabras."
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in history[-10:]:
+        if msg["role"] in ("user", "assistant"):
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": prompt})
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={"model": GROQ_MODEL, "messages": messages, "max_tokens": 500, "temperature": 0.7},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"❌ Error al conectar con la IA: {e}"
+
+
+with tab_chat:
+    st.subheader("💬 Chat con tu Asistente IA")
+    st.caption("Hazme cualquier pregunta sobre tu sistema de vida, salud, nutrición o hábitos.")
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    if st.session_state.chat_history:
+        if st.button("🗑️ Limpiar conversación", key="clear_chat"):
+            st.session_state.chat_history = []
+            st.rerun()
+
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Pregúntame algo... ej: ¿cuántas kcal llevo hoy?"):
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Pensando..."):
+                context = _build_life_context()
+                response = _call_groq_chat(prompt, context, st.session_state.chat_history[:-1])
+            st.markdown(response)
+
+        st.session_state.chat_history.append({"role": "assistant", "content": response})

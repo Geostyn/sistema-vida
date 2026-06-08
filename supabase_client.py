@@ -183,11 +183,11 @@ def insert_diario(lo_importante, gratitud, mejora, habitos_ok) -> bool:
         return False
 
 
-def insert_habitos(ducha_fria, te_clavo, oracion, silencio) -> bool:
+def insert_habitos(ducha_fria, te_clavo, oracion, silencio, creatina=False) -> bool:
     try:
         get_client().table("habitos").insert({
             "fecha": _today(), "ducha_fria": ducha_fria, "te_clavo": te_clavo,
-            "oracion": oracion, "silencio": silencio,
+            "oracion": oracion, "silencio": silencio, "creatina": creatina,
         }).execute()
         return True
     except Exception as e:
@@ -333,6 +333,58 @@ def get_top_items_mes(n: int = 10) -> list:
         return []
 
 
+# ── Mejoras de bienestar ─────────────────────────────────────
+
+def get_mejoras(estado: str = None) -> list:
+    try:
+        sb = get_client()
+        q = sb.table("mejoras").select("*").order("id")
+        if estado:
+            q = q.eq("estado", estado)
+        r = q.execute()
+        return r.data or []
+    except Exception as e:
+        logger.error(f"Supabase get_mejoras: {e}")
+        return []
+
+
+def insert_mejora(nombre: str, categoria: str, descripcion: str, evidencia: str) -> dict:
+    try:
+        r = get_client().table("mejoras").insert({
+            "nombre": nombre, "categoria": categoria,
+            "descripcion": descripcion, "evidencia": evidencia,
+            "estado": "recomendada",
+        }).execute()
+        return r.data[0] if r.data else {}
+    except Exception as e:
+        logger.error(f"Supabase insert_mejora: {e}")
+        return {}
+
+
+def update_mejora_estado(mejora_id: int, nuevo_estado: str, fecha_inicio: str = None) -> bool:
+    try:
+        payload = {"estado": nuevo_estado}
+        if fecha_inicio:
+            payload["fecha_inicio"] = fecha_inicio
+        get_client().table("mejoras").update(payload).eq("id", mejora_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase update_mejora_estado: {e}")
+        return False
+
+
+def get_recomendacion_semana() -> dict:
+    """Devuelve una mejora aleatoria con estado 'recomendada'."""
+    import random
+    try:
+        r = get_client().table("mejoras").select("*").eq("estado", "recomendada").execute()
+        data = r.data or []
+        return random.choice(data) if data else {}
+    except Exception as e:
+        logger.error(f"Supabase get_recomendacion_semana: {e}")
+        return {}
+
+
 # ── Resumen de estado para el bot ────────────────────────────
 
 def get_vida_state_summary() -> str:
@@ -354,14 +406,19 @@ def get_vida_state_summary() -> str:
             v = streaks.get(key, 0)
             return v if isinstance(v, (int, float)) else v.get("current", 0)
 
+        mejoras_activas = get_mejoras("activa") + get_mejoras("en_proceso")
+        mejoras_str = ", ".join(m["nombre"] for m in mejoras_activas) or "ninguna"
+
         return (
             f"MES: {_today()[:7]}\n"
-            f"STREAKS: ducha_fria={streak('ducha_fria')}d | te_clavo={streak('te_clavo')}d | oracion={streak('oracion')}d\n"
+            f"STREAKS: ducha_fria={streak('ducha_fria')}d | te_clavo={streak('te_clavo')}d | "
+            f"oracion={streak('oracion')}d | creatina={streak('creatina')}d\n"
             f"ENTRENOS_MES: {dep_r.count or 0}\n"
             f"DIETA_DIAS_MES: {alim_r.count or 0}\n"
             f"GASTOS_MES: €{total_gastos:.2f}\n"
             f"TARGET_NUTRI: 2800kcal|150gProt|350gCarbs|78gGrasas|3L agua\n"
             f"OBJETIVO: ganar masa muscular\n"
+            f"MEJORAS_ACTIVAS: {mejoras_str}\n"
             f"XP_TOTAL: {xp.get('total_xp', 0)}"
         )
     except Exception as e:

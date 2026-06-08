@@ -24,6 +24,29 @@ SKILLS = {
     "disciplina": {"emoji": "⚡", "nombre": "Disciplina", "desc": "Constancia, hábitos y rachas"},
 }
 
+# ── Multiplicadores por racha ────────────────────────────────
+# Orden: umbral_días, multiplicador (mayor primero)
+STREAK_MULTIPLIERS = [
+    (60, 2.00),
+    (30, 1.75),
+    (14, 1.50),
+    (7,  1.25),
+    (0,  1.00),
+]
+
+HABIT_ACTIONS = {
+    "ducha_fria", "te_clavo", "oracion_cumplida",
+    "silencio_cumplido", "creatina_cumplida",
+}
+
+
+def get_streak_multiplier(streak_days: int) -> float:
+    for threshold, mult in STREAK_MULTIPLIERS:
+        if streak_days >= threshold:
+            return mult
+    return 1.0
+
+
 # ── Tabla de XP por acción ──────────────────────────────────
 XP_ACTIONS = {
     # FITNESS
@@ -50,6 +73,8 @@ XP_ACTIONS = {
     "ducha_fria":              {"xp": 15, "skill": "disciplina", "msg": "+15 XP ⚡ Disciplina"},
     "te_clavo":                {"xp": 8,  "skill": "disciplina", "msg": "+8 XP ⚡ Hábito cumplido"},
     "diario_escrito":          {"xp": 10, "skill": "disciplina", "msg": "+10 XP ⚡ Día registrado"},
+    # SUPLEMENTACIÓN
+    "creatina_cumplida":       {"xp": 10, "skill": "fitness",    "msg": "+10 XP 💊 Creatina"},
 }
 
 # ── Tabla de niveles ────────────────────────────────────────
@@ -148,6 +173,16 @@ ACHIEVEMENTS = {
         "desc": "30 días cumpliendo TODOS los hábitos",
         "xp_bonus": 600, "skill_bonus": "disciplina"
     },
+    "creatina_7": {
+        "emoji": "💊", "nombre": "Creatina Constante",
+        "desc": "7 días seguidos tomando creatina",
+        "xp_bonus": 50, "skill_bonus": "fitness"
+    },
+    "creatina_30": {
+        "emoji": "🧬", "nombre": "Carga Completa",
+        "desc": "30 días seguidos con creatina",
+        "xp_bonus": 200, "skill_bonus": "fitness"
+    },
     "savings_month": {
         "emoji": "💎", "nombre": "Primer Ahorro",
         "desc": "Primer mes dentro del presupuesto con ahorro",
@@ -176,7 +211,7 @@ def _default_state() -> dict:
         "achievements_unlocked": [],
         "streaks": {
             "ducha_fria": 0, "te_clavo": 0, "oracion": 0,
-            "silencio": 0, "habitos_todos": 0, "proteina": 0
+            "silencio": 0, "habitos_todos": 0, "proteina": 0, "creatina": 0
         },
         "counters": {
             "lexico": 0, "refranes": 0, "ideas": 0,
@@ -238,10 +273,11 @@ def overall_level(state: dict) -> tuple[int, str]:
 
 
 # ── Dar XP ──────────────────────────────────────────────────
-def award_xp(action_key: str, state: Optional[dict] = None) -> dict:
+def award_xp(action_key: str, state: Optional[dict] = None, streak_days: int = 0) -> dict:
     """
     Premia XP por una acción. Devuelve dict con:
     {xp_gained, skill, leveled_up, new_level, achievements_unlocked, messages}
+    Para hábitos con racha, pasa streak_days para aplicar multiplicador.
     """
     if state is None:
         state = load_state()
@@ -249,11 +285,24 @@ def award_xp(action_key: str, state: Optional[dict] = None) -> dict:
     if action_key not in XP_ACTIONS:
         return {"xp_gained": 0, "messages": [], "achievements_unlocked": []}
 
-    action     = XP_ACTIONS[action_key]
-    xp_gained  = action["xp"]
-    skill      = action["skill"]
-    messages   = [action["msg"]]
+    action    = XP_ACTIONS[action_key]
+    base_xp   = action["xp"]
+    skill     = action["skill"]
     new_achievs = []
+
+    # Aplicar multiplicador de racha en acciones de hábitos
+    if action_key in HABIT_ACTIONS and streak_days > 0:
+        mult = get_streak_multiplier(streak_days)
+        xp_gained = int(round(base_xp * mult))
+        if mult > 1.0:
+            msg = f"{action['msg']} ×{mult:.2f} (racha {streak_days}d → {xp_gained} XP)"
+        else:
+            msg = action["msg"]
+    else:
+        xp_gained = base_xp
+        msg = action["msg"]
+
+    messages = [msg]
 
     # Sumar XP
     state["total_xp"] += xp_gained
@@ -369,6 +418,10 @@ def check_achievements(state: dict) -> list[str]:
         try_unlock("prayer_7")
     if streaks.get("oracion", 0) >= 30:
         try_unlock("prayer_30")
+    if streaks.get("creatina", 0) >= 7:
+        try_unlock("creatina_7")
+    if streaks.get("creatina", 0) >= 30:
+        try_unlock("creatina_30")
     if streaks.get("habitos_todos", 0) >= 7:
         try_unlock("habit_all_7")
     if streaks.get("habitos_todos", 0) >= 30:
@@ -456,6 +509,7 @@ fecha-inicio: 2026-06-01
 | 🚿 Ducha fría | {streaks.get('ducha_fria', 0)} días |
 | 🌿 Té de clavo | {streaks.get('te_clavo', 0)} días |
 | 🙏 Oración | {streaks.get('oracion', 0)} días |
+| 💊 Creatina | {streaks.get('creatina', 0)} días |
 | 💪 Proteína objetivo | {streaks.get('proteina', 0)} días |
 | 🌟 Todos los hábitos | {streaks.get('habitos_todos', 0)} días |
 
