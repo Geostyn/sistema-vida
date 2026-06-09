@@ -1214,15 +1214,78 @@ with tab6:
         else:
             st.info("Sin ideas registradas aún.")
 
-        st.subheader("💬 Refranes")
-        refs = q("refranes", order="fecha", desc=True, limit=15)
-        if refs:
-            for r in refs:
-                with st.expander(f"💬 {r.get('refran','')}"):
-                    st.write(f"**Significado:** {r.get('significado','—')}")
-                    if r.get("contexto"): st.write(f"**Contexto:** {r['contexto']}")
+        # ── Refranes & Dichos ──────────────────────────────────────
+        refs_all = q("refranes", order="fecha", desc=True)
+        total_refs = len(refs_all) if refs_all else 0
+
+        ref_h1, ref_h2 = st.columns([3, 1])
+        with ref_h1:
+            st.subheader(f"💬 Refranes & Dichos — {total_refs}")
+        with ref_h2:
+            ref_busca = st.text_input("🔍", key="ref_search", label_visibility="collapsed",
+                                      placeholder="🔍 Buscar refrán…")
+
+        # Formulario para añadir
+        with st.expander("➕ Añadir nuevo refrán", expanded=False):
+            with st.form("form_add_refran", clear_on_submit=True):
+                nr_refran = st.text_input("Refrán o dicho")
+                nr_sig    = st.text_area("Significado", height=70)
+                nr_ctx    = st.text_input("Contexto / dónde lo aprendiste (opcional)")
+                if st.form_submit_button("💾 Guardar refrán", type="primary", use_container_width=True):
+                    if nr_refran.strip():
+                        ok = sb_insert("refranes", {
+                            "fecha":      TODAY,
+                            "refran":     nr_refran.strip(),
+                            "significado": nr_sig.strip(),
+                            "contexto":   nr_ctx.strip() or None,
+                        })
+                        if ok:
+                            st.success(f"✅ «{nr_refran.strip()}» guardado.")
+                            st.rerun()
+                    else:
+                        st.warning("Escribe el refrán primero.")
+
+        st.write("")
+
+        if refs_all:
+            filtrados = [r for r in refs_all
+                         if not ref_busca
+                         or ref_busca.lower() in r.get("refran","").lower()
+                         or ref_busca.lower() in r.get("significado","").lower()] if ref_busca else refs_all
+
+            if not filtrados:
+                st.info(f"No hay refranes que coincidan con «{ref_busca}».")
+            else:
+                for r in filtrados[:40]:
+                    refran_txt = r.get("refran", "")
+                    sig_txt    = r.get("significado", "—")
+                    ctx_txt    = r.get("contexto", "")
+                    fecha_txt  = r.get("fecha", "")
+                    st.markdown(
+                        f"""<div style="background:linear-gradient(135deg,#1e2130,#252a3d);
+                        border-radius:10px;padding:14px 16px;margin:8px 0;
+                        border-left:4px solid #FF9800;">
+                        <p style="color:#FFB74D;font-size:1.05em;font-weight:600;
+                        margin:0 0 6px 0;font-style:italic;">«{refran_txt}»</p>
+                        <p style="color:#ddd;font-size:0.92em;margin:0 0 4px 0;">
+                        📖 <b>Significado:</b> {sig_txt}</p>
+                        {f'<p style="color:#888;font-size:0.85em;margin:0;">💡 {ctx_txt}</p>' if ctx_txt else ''}
+                        <p style="color:#555;font-size:0.78em;margin:4px 0 0 0;">{fecha_txt}</p>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                if len(filtrados) > 40:
+                    st.caption(f"Mostrando 40 de {len(filtrados)} refranes.")
         else:
-            st.info("Sin refranes aún.")
+            st.markdown(
+                """<div style="background:#1a1e2e;border-radius:10px;padding:20px;
+                text-align:center;color:#888;border:1px dashed rgba(255,152,0,0.3);">
+                💬 Aún no hay refranes.<br>
+                Añade el primero con el formulario de arriba<br>
+                o cuéntaselo al bot de Telegram.
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
     # ════════════════════════════════════════════════════════════
     # LÉXICO & ANÁLISIS GEMINI — Sección full-width
