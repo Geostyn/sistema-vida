@@ -1344,13 +1344,9 @@ Si no hay palabras difíciles: {{"palabras": []}}"""
                             messages=[{"role": "user", "content": _p}],
                             temperature=0.2,
                             max_tokens=1024,
+                            response_format={"type": "json_object"},
                         )
-                        _raw2 = _re2.sub(r"^```(?:json)?|```$", "", _resp.choices[0].message.content.strip()).strip()
-                        # Extraer primer bloque JSON (ignora emojis o texto extra fuera del JSON)
-                        _m2 = _re2.search(r'\{.*\}', _raw2, _re2.DOTALL)
-                        if _m2:
-                            _raw2 = _m2.group(0)
-                        _palabras = _json.loads(_raw2).get("palabras", [])
+                        _palabras = _json.loads(_resp.choices[0].message.content).get("palabras", [])
 
                         added, skipped = 0, 0
                         for pw in _palabras:
