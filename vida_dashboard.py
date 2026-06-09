@@ -1327,7 +1327,7 @@ with tab6:
                     try:
                         import google.generativeai as _genai, json as _json, re as _re2
                         _genai.configure(api_key=GEMINI_API_KEY)
-                        _m = _genai.GenerativeModel("gemini-1.5-flash-latest")
+                        _m = _genai.GenerativeModel("gemini-2.0-flash")
                         _p = f"""Del siguiente texto en español extrae TODAS las palabras filosóficas, latinas, griegas, arcaicas o poco comunes que un lector joven podría no conocer.
 
 Texto:
@@ -1341,6 +1341,10 @@ Responde SOLO JSON sin markdown:
 Si no hay palabras difíciles: {{"palabras": []}}"""
                         _r = _m.generate_content(_p, generation_config={"temperature": 0.2, "max_output_tokens": 1024})
                         _raw2 = _re2.sub(r"^```(?:json)?|```$", "", _r.text.strip()).strip()
+                        # Extraer primer bloque JSON (ignora emojis o texto extra fuera del JSON)
+                        _m2 = _re2.search(r'\{.*\}', _raw2, _re2.DOTALL)
+                        if _m2:
+                            _raw2 = _m2.group(0)
                         _palabras = _json.loads(_raw2).get("palabras", [])
 
                         added, skipped = 0, 0

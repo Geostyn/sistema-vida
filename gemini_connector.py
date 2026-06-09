@@ -47,7 +47,7 @@ def analyze_book_page(api_key: str, image_bytes: bytes, libro_nombre: str = "lib
 
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash-latest",
+            model_name="gemini-2.0-flash",
             safety_settings={
                 HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_NONE,
@@ -70,6 +70,10 @@ def analyze_book_page(api_key: str, image_bytes: bytes, libro_nombre: str = "lib
         raw = response.text.strip()
         raw = re.sub(r"^```(?:json)?", "", raw).strip()
         raw = re.sub(r"```$", "", raw).strip()
+        # Extraer primer bloque JSON válido (ignora texto extra o emojis fuera del JSON)
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if m:
+            raw = m.group(0)
 
         result = json.loads(raw)
         if "explicacion" not in result:
