@@ -1238,151 +1238,107 @@ with tab6:
     gem_modo_tab, gem_foto_tab = st.tabs(["📋 Pegar desde Gemini", "📷 Subir foto"])
 
     # ────────────────────────────────────────────────────────────
-    # MODO A — Pegar respuesta de Gemini (flujo principal)
+    # MODO A — Pegar desde Gemini (flujo principal, 1 solo paso)
     # ────────────────────────────────────────────────────────────
     with gem_modo_tab:
-        st.caption("Copia la respuesta de Gemini y pégala aquí. El dashboard extrae las palabras automáticamente.")
-        pm_col1, pm_col2 = st.columns([1, 1])
+        libro_paste = st.selectbox("Libro", titulos_opts, key="paste_libro",
+                                   label_visibility="collapsed")
+        if libro_paste == "Otro libro…":
+            libro_paste = st.text_input("Nombre del libro:", key="paste_libro_txt",
+                                        placeholder="Título del libro")
+        texto_pegado = st.text_area(
+            "Pega aquí la respuesta de Gemini",
+            height=220,
+            key="paste_gemini_text",
+            placeholder="Pega aquí la respuesta de Gemini y pulsa el botón…",
+            label_visibility="visible",
+        )
 
-        with pm_col1:
-            libro_paste = st.selectbox("Libro", titulos_opts, key="paste_libro")
-            if libro_paste == "Otro libro…":
-                libro_paste = st.text_input("Nombre del libro:", key="paste_libro_txt")
-            texto_pegado = st.text_area(
-                "Respuesta de Gemini",
-                height=280,
-                key="paste_gemini_text",
-                placeholder="Pega aquí la explicación que te dio Gemini…\n\nPuede ser texto largo, con palabras resaltadas, listas, etc.",
-                label_visibility="collapsed",
-            )
-            btn_extraer = st.button("🔍 Extraer palabras", type="primary",
-                                    use_container_width=True, key="btn_extraer_paste",
-                                    disabled=not texto_pegado)
-
-        with pm_col2:
-            st.markdown("**🔤 Palabras extraídas**")
-
-            if btn_extraer and texto_pegado:
-                if GEMINI_API_KEY:
-                    # Usar Gemini API para extraer palabras del texto pegado
-                    with st.spinner("Extrayendo palabras... ⏳"):
-                        try:
-                            import google.generativeai as _genai
-                            _genai.configure(api_key=GEMINI_API_KEY)
-                            _model = _genai.GenerativeModel("gemini-1.5-flash-latest")
-                            _extract_prompt = f"""Del siguiente texto en español, extrae TODAS las palabras filosóficas, latinas, griegas, arcaicas, técnicas o poco comunes que un lector joven podría no conocer.
+        if st.button("🚀 Extraer y guardar todo automáticamente",
+                     type="primary", use_container_width=True,
+                     key="btn_auto_todo", disabled=not texto_pegado):
+            if not GEMINI_API_KEY:
+                st.error("Añade `GEMINI_API_KEY` en los secrets de Streamlit Cloud.")
+            else:
+                with st.spinner("Extrayendo palabras y guardando en el léxico… ⏳"):
+                    try:
+                        import google.generativeai as _genai, json as _json, re as _re2
+                        _genai.configure(api_key=GEMINI_API_KEY)
+                        _m = _genai.GenerativeModel("gemini-1.5-flash-latest")
+                        _p = f"""Del siguiente texto en español extrae TODAS las palabras filosóficas, latinas, griegas, arcaicas o poco comunes que un lector joven podría no conocer.
 
 Texto:
 \"\"\"
 {texto_pegado[:4000]}
 \"\"\"
 
-Responde SOLO en JSON sin markdown:
-{{"palabras": [{{"palabra": "la palabra exacta", "definicion": "significado claro en español", "uso_en_libro": "frase del texto donde aparece"}}]}}
+Responde SOLO JSON sin markdown:
+{{"palabras": [{{"palabra": "palabra exacta", "definicion": "significado claro", "uso_en_libro": "frase exacta del texto donde aparece"}}]}}
 
-Si no hay palabras difíciles, devuelve {{"palabras": []}}"""
-                            _resp = _model.generate_content(
-                                _extract_prompt,
-                                generation_config={"temperature": 0.2, "max_output_tokens": 1024},
-                            )
-                            import json, re as _re
-                            _raw = _resp.text.strip()
-                            _raw = _re.sub(r"^```(?:json)?", "", _raw).strip()
-                            _raw = _re.sub(r"```$", "", _raw).strip()
-                            _extracted = json.loads(_raw)
-                            st.session_state["paste_result"] = _extracted.get("palabras", [])
-                            st.session_state["paste_texto"]  = texto_pegado
-                            st.session_state["paste_libro_name"] = libro_paste or "libro"
-                        except Exception as _e:
-                            st.error(f"Error: {_e}")
-                else:
-                    # Sin API key: mostrar el texto + formulario manual
-                    st.session_state["paste_result"]     = []
-                    st.session_state["paste_texto"]      = texto_pegado
-                    st.session_state["paste_libro_name"] = libro_paste or "libro"
-                    st.session_state["paste_manual"]     = True
+Si no hay palabras difíciles: {{"palabras": []}}"""
+                        _r = _m.generate_content(_p, generation_config={"temperature": 0.2, "max_output_tokens": 1024})
+                        _raw2 = _re2.sub(r"^```(?:json)?|```$", "", _r.text.strip()).strip()
+                        _palabras = _json.loads(_raw2).get("palabras", [])
 
-            # ── Mostrar texto pegado ──────────────────────────────
-            if "paste_texto" in st.session_state:
-                st.markdown(
-                    f"""<div style="background:#1a1e2e;border-radius:10px;padding:14px;
-                    border-left:3px solid #9C27B0;font-size:0.9em;line-height:1.6;
-                    max-height:180px;overflow-y:auto;margin-bottom:12px;">
-                    {st.session_state['paste_texto'][:1200].replace(chr(10),'<br>')}
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
+                        added, skipped = 0, 0
+                        for pw in _palabras:
+                            pw_w = pw.get("palabra", "").strip()
+                            if not pw_w:
+                                continue
+                            exists = bool(q("lexico", select="id", filters={"palabra": f"ilike.{pw_w}"}))
+                            if exists:
+                                skipped += 1
+                            else:
+                                sb_insert("lexico", {
+                                    "fecha":        TODAY,
+                                    "palabra":      pw_w,
+                                    "definicion":   pw.get("definicion", ""),
+                                    "ejemplo":      pw.get("uso_en_libro", ""),
+                                    "origen_libro": libro_paste or "libro",
+                                    "uso_en_libro": pw.get("uso_en_libro", ""),
+                                })
+                                added += 1
 
-            paste_lib_name = st.session_state.get("paste_libro_name", "libro")
-            palabras_paste = st.session_state.get("paste_result", [])
+                        st.session_state["paste_summary"] = {
+                            "added": added, "skipped": skipped,
+                            "palabras": _palabras,
+                            "libro": libro_paste or "libro",
+                        }
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"Error: {_e}")
 
-            if palabras_paste:
-                st.markdown(f"**{len(palabras_paste)} palabras detectadas**")
-                for pw in palabras_paste:
-                    pw_word = pw.get("palabra", "")
-                    pw_def  = pw.get("definicion", "")
-                    pw_uso  = pw.get("uso_en_libro", "")
-                    already = bool(q("lexico", select="id", filters={"palabra": f"ilike.{pw_word}"}))
-                    badge   = "✅" if already else ""
-                    st.markdown(
-                        f"""<div style="background:#1e2130;border-radius:8px;padding:10px;
-                        margin:5px 0;border:1px solid rgba(255,255,255,0.08);">
-                        <b style="color:#CE93D8;">{pw_word}</b>
-                        {f'<span style="color:#4CAF50;font-size:0.8em;margin-left:6px;">{badge} ya guardada</span>' if already else ''}
-                        <br><span style="color:#ccc;font-size:0.88em;">{pw_def}</span>
-                        {f'<br><em style="color:#777;font-size:0.82em;">"{pw_uso}"</em>' if pw_uso else ''}
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-                    if not already:
-                        if st.button(f"✚ «{pw_word}»", key=f"paste_add_{pw_word}", use_container_width=True):
-                            sb_insert("lexico", {
-                                "fecha": TODAY, "palabra": pw_word,
-                                "definicion": pw_def, "ejemplo": pw_uso,
-                                "origen_libro": paste_lib_name, "uso_en_libro": pw_uso,
-                            })
-                            st.success(f"✅ «{pw_word}» guardada.")
-                            st.rerun()
+        # ── Resultado tras guardar ────────────────────────────────
+        if "paste_summary" in st.session_state:
+            s = st.session_state["paste_summary"]
+            added_n   = s["added"]
+            skipped_n = s["skipped"]
+            total_n   = added_n + skipped_n
 
-                if st.button("✅ Añadir todas al léxico de golpe", type="primary",
-                             use_container_width=True, key="paste_add_all"):
-                    added = 0
-                    for pw in palabras_paste:
-                        pw_word = pw.get("palabra","")
-                        if pw_word and not q("lexico", select="id", filters={"palabra": f"ilike.{pw_word}"}):
-                            sb_insert("lexico", {
-                                "fecha": TODAY, "palabra": pw_word,
-                                "definicion": pw.get("definicion",""),
-                                "ejemplo": pw.get("uso_en_libro",""),
-                                "origen_libro": paste_lib_name,
-                                "uso_en_libro": pw.get("uso_en_libro",""),
-                            })
-                            added += 1
-                    st.success(f"✅ {added} palabras nuevas añadidas al léxico.")
-                    st.rerun()
+            if added_n > 0:
+                st.success(f"✅ {added_n} palabras nuevas guardadas en el léxico · {skipped_n} ya existían")
+            else:
+                st.info(f"Todas las palabras detectadas ({skipped_n}) ya estaban en el léxico.")
 
-            elif st.session_state.get("paste_manual") and "paste_texto" in st.session_state:
-                # Sin API: formulario manual
-                st.info("Sin `GEMINI_API_KEY` las palabras se añaden manualmente.")
-                with st.form("paste_manual_form"):
-                    m_word = st.text_input("Palabra")
-                    m_def  = st.text_area("Definición", height=60)
-                    m_uso  = st.text_input("Frase del libro donde aparece")
-                    if st.form_submit_button("✚ Añadir al léxico", type="primary"):
-                        if m_word:
-                            sb_insert("lexico", {
-                                "fecha": TODAY, "palabra": m_word,
-                                "definicion": m_def, "ejemplo": m_uso,
-                                "origen_libro": paste_lib_name, "uso_en_libro": m_uso,
-                            })
-                            st.success(f"✅ «{m_word}» añadida.")
-                            st.rerun()
+            # Listado compacto de lo guardado
+            if s.get("palabras"):
+                with st.expander(f"Ver las {total_n} palabras detectadas", expanded=added_n > 0):
+                    for pw in s["palabras"]:
+                        pw_w = pw.get("palabra","")
+                        pw_d = pw.get("definicion","")
+                        pw_u = pw.get("uso_en_libro","")
+                        st.markdown(
+                            f"""<div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+                            <b style="color:#CE93D8;">{pw_w}</b>
+                            <span style="color:#ccc;font-size:0.88em;"> — {pw_d}</span>
+                            {f'<br><em style="color:#666;font-size:0.82em;">"{pw_u}"</em>' if pw_u else ''}
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
 
-            if "paste_texto" in st.session_state:
-                if st.button("🔄 Limpiar", key="btn_paste_clear"):
-                    for k in ["paste_result", "paste_texto", "paste_libro_name", "paste_manual"]:
-                        st.session_state.pop(k, None)
-                    st.rerun()
+            if st.button("🔄 Nueva entrada", key="btn_paste_clear", use_container_width=True):
+                st.session_state.pop("paste_summary", None)
+                st.rerun()
 
     # ────────────────────────────────────────────────────────────
     # MODO B — Subir foto (backup)
