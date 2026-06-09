@@ -19,30 +19,49 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* Desktop base */
-div[data-testid="stMetric"] { background:#1e2130; border-radius:10px; padding:14px; }
-.stTabs [data-baseweb="tab"] { font-size:15px; }
+/* ── Desktop base ── */
+div[data-testid="stMetric"] {
+  background: linear-gradient(135deg, #1e2130 0%, #252a40 100%);
+  border-radius: 12px; padding: 14px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.stTabs [data-baseweb="tab"] { font-size: 15px; }
+
+/* ── Garmin map container ── */
+.garmin-map-card {
+  background: #1a1e2e; border-radius: 14px;
+  padding: 16px; margin-bottom: 12px;
+  border: 1px solid rgba(76,175,80,0.3);
+}
+
+/* ── KBC card ── */
+.kbc-card {
+  background: linear-gradient(135deg, #1a2040 0%, #1e2535 100%);
+  border-radius: 14px; padding: 20px;
+  border: 1px solid rgba(33,150,243,0.4);
+}
 
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {
-  /* Reducir padding del contenedor principal */
   .block-container { padding: 0.6rem 0.6rem 1rem !important; max-width: 100% !important; }
-  /* Ocultar sidebar en móvil */
   section[data-testid="stSidebar"] { display: none !important; }
-  /* Encabezados más compactos */
   h1 { font-size: 1.3rem !important; }
   h2 { font-size: 1.1rem !important; }
   h3 { font-size: 1rem !important; }
-  /* Tabs horizontales con scroll en móvil */
   .stTabs [data-baseweb="tab-list"] { overflow-x: auto; flex-wrap: nowrap; }
   .stTabs [data-baseweb="tab"] { font-size: 12px !important; padding: 6px 10px !important; white-space: nowrap; }
-  /* Botones touch-friendly */
   .stButton > button { min-height: 44px !important; font-size: 0.95rem !important; width: 100%; }
-  /* Métricas sin truncar */
   div[data-testid="stMetric"] { padding: 8px !important; }
-  div[data-testid="stMetricValue"] { font-size: 1.2rem !important; }
-  /* Chat input siempre visible */
+  div[data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+  div[data-testid="stMetricLabel"] { font-size: 0.75rem !important; }
   div[data-testid="stChatInput"] { position: sticky; bottom: 0; background: #0e1117; padding: 6px; }
+  /* Stack columns vertically on mobile by reducing min-width */
+  [data-testid="column"] { min-width: 100% !important; }
+}
+
+@media (max-width: 480px) {
+  h1 { font-size: 1.1rem !important; }
+  .stTabs [data-baseweb="tab"] { font-size: 11px !important; padding: 4px 7px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -50,8 +69,13 @@ div[data-testid="stMetric"] { background:#1e2130; border-radius:10px; padding:14
 # ── Credenciales ──────────────────────────────────────────────
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
-GROQ_MODEL   = os.environ.get("GROQ_MODEL")   or st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")    or st.secrets.get("GROQ_API_KEY", "")
+GROQ_MODEL      = os.environ.get("GROQ_MODEL")      or st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GARMIN_EMAIL    = os.environ.get("GARMIN_EMAIL")    or st.secrets.get("GARMIN_EMAIL", "")
+GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD") or st.secrets.get("GARMIN_PASSWORD", "")
+GC_ID           = os.environ.get("GOCARDLESS_ID")   or st.secrets.get("GOCARDLESS_ID", "")
+GC_KEY          = os.environ.get("GOCARDLESS_KEY")  or st.secrets.get("GOCARDLESS_KEY", "")
+GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")  or st.secrets.get("GEMINI_API_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit.")
@@ -273,8 +297,7 @@ with tab1:
 # TAB 2 — DEPORTE
 # ════════════════════════════════════════════════════════════════
 with tab2:
-    dep_data = q("deporte", order="fecha", desc=True, limit=50)
-
+    dep_data = q("deporte", order="fecha", desc=True, limit=60)
     dep_mes  = [d for d in dep_data if d.get("fecha", "") >= MONTH_START]
     dep_sem  = [d for d in dep_data if d.get("fecha", "") >= WEEK_START]
 
@@ -284,31 +307,196 @@ with tab2:
     m3.metric("💪 Racha entreno",        f"{streak_val(streaks,'fitness')} días")
     m4.metric("📊 Total histórico",      counters.get("entrenamientos", 0))
 
+    # ── Heatmap calendario del mes ───────────────────────────────
+    if dep_mes:
+        today_obj   = date.today()
+        days_in_month = (date(today_obj.year, today_obj.month % 12 + 1, 1) - timedelta(days=1)).day if today_obj.month < 12 else 31
+        trained_days = set(d.get("fecha", "")[-2:] for d in dep_mes)
+        cal_matrix, cal_text, week_row = [], [], []
+        week_r, week_t = [], []
+        first_weekday = date(today_obj.year, today_obj.month, 1).weekday()
+        for _ in range(first_weekday):
+            week_r.append(None); week_t.append("")
+        for day in range(1, days_in_month + 1):
+            day_str = f"{day:02d}"
+            week_r.append(1 if day_str in trained_days else 0)
+            week_t.append(f"Día {day}\n{'✅ Entrenado' if day_str in trained_days else '—'}")
+            if len(week_r) == 7:
+                cal_matrix.append(week_r); cal_text.append(week_t)
+                week_r, week_t = [], []
+        if week_r:
+            while len(week_r) < 7:
+                week_r.append(None); week_t.append("")
+            cal_matrix.append(week_r); cal_text.append(week_t)
+
+        fig_cal = go.Figure(go.Heatmap(
+            z=cal_matrix, text=cal_text, hoverinfo="text",
+            colorscale=[[0, "#1e2130"], [0.5, "#1e2130"], [0.5001, "#4CAF50"], [1, "#66BB6A"]],
+            zmin=0, zmax=1, showscale=False,
+            xgap=4, ygap=4,
+        ))
+        fig_cal.update_layout(
+            title=f"📅 Calendario de entrenos — {MONTH_LABEL}",
+            xaxis=dict(tickvals=list(range(7)), ticktext=["L","M","X","J","V","S","D"],
+                       showgrid=False, zeroline=False),
+            yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"), height=200, margin=dict(t=50,b=10,l=10,r=10),
+        )
+        st.plotly_chart(fig_cal, use_container_width=True)
+
+    # ── Gráfico de actividades del mes ───────────────────────────
+    if dep_mes:
+        actividades = pd.DataFrame(dep_mes)["actividad"].value_counts()
+        fig_act = go.Figure(go.Bar(
+            x=actividades.index.tolist(), y=actividades.values.tolist(),
+            marker=dict(color=actividades.values.tolist(),
+                        colorscale="Viridis", showscale=False),
+            text=actividades.values.tolist(), textposition="outside",
+        ))
+        fig_act.update_layout(
+            title=f"Actividades en {MONTH_LABEL}",
+            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"), height=240, margin=dict(t=50,b=20),
+        )
+        st.plotly_chart(fig_act, use_container_width=True)
+
+    st.divider()
+
+    # ════ SECCIÓN GARMIN CONNECT ════════════════════════════════
+    st.subheader("🛰️ Garmin Connect")
+
+    if not GARMIN_EMAIL or not GARMIN_PASSWORD:
+        st.info("Para ver tus datos de Garmin, añade `GARMIN_EMAIL` y `GARMIN_PASSWORD` en los secrets de Streamlit.")
+    else:
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _garmin_activities(email, pwd, limit=10):
+            try:
+                from garmin_connector import get_recent_activities
+                return get_recent_activities(email, pwd, limit)
+            except Exception as e:
+                return []
+
+        @st.cache_data(ttl=3600, show_spinner=False)
+        def _garmin_coords(email, pwd, act_id):
+            try:
+                from garmin_connector import get_activity_coords
+                return get_activity_coords(email, pwd, act_id)
+            except Exception:
+                return []
+
+        if st.button("🔄 Actualizar Garmin", key="btn_garmin_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+        with st.spinner("Cargando actividades de Garmin..."):
+            garmin_acts = _garmin_activities(GARMIN_EMAIL, GARMIN_PASSWORD, 10)
+
+        if not garmin_acts:
+            st.warning("No se pudieron cargar actividades. Verifica las credenciales de Garmin Connect.")
+        else:
+            latest = garmin_acts[0]
+
+            # ── Métricas de la última actividad ──────────────────
+            st.markdown(f"**Última actividad:** {latest['name']} — {latest['date']}")
+            try:
+                from garmin_connector import pace_str as _pace_str
+            except ImportError:
+                def _pace_str(d, t): return "—"
+
+            ga1, ga2, ga3, ga4, ga5 = st.columns(5)
+            ga1.metric("📏 Distancia",  f"{latest['distance_km']} km")
+            ga2.metric("⏱️ Duración",   f"{latest['duration_min']:.0f} min")
+            ga3.metric("❤️ FC media",   f"{latest['avg_hr'] or '—'} bpm")
+            ga4.metric("🔥 Calorías",   f"{latest['calories'] or '—'} kcal")
+            ga5.metric("⛰️ Desnivel",   f"{latest['elevation_gain'] or '—'} m")
+
+            pace_val = _pace_str(latest["distance_km"], latest["duration_min"])
+            st.caption(f"Ritmo medio: **{pace_val}** · FC máx: {latest['max_hr'] or '—'} bpm")
+
+            # ── Mapa de la última carrera ─────────────────────────
+            with st.spinner("Cargando mapa GPS..."):
+                coords = _garmin_coords(GARMIN_EMAIL, GARMIN_PASSWORD, latest["activity_id"])
+
+            if coords:
+                lats = [c[0] for c in coords]
+                lons = [c[1] for c in coords]
+                center_lat = sum(lats) / len(lats)
+                center_lon = sum(lons) / len(lons)
+
+                fig_map = go.Figure()
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=lats, lon=lons,
+                    mode="lines",
+                    line=dict(width=4, color="#4CAF50"),
+                    hoverinfo="none",
+                    name="Ruta",
+                ))
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=[lats[0], lats[-1]], lon=[lons[0], lons[-1]],
+                    mode="markers",
+                    marker=dict(size=14,
+                                color=["#2196F3", "#F44336"],
+                                symbol=["circle", "circle"]),
+                    hovertext=["Inicio", "Final"],
+                    hoverinfo="text",
+                    name="Puntos",
+                ))
+                fig_map.update_layout(
+                    mapbox=dict(style="open-street-map",
+                                center=dict(lat=center_lat, lon=center_lon),
+                                zoom=13),
+                    height=380,
+                    margin=dict(t=0, b=0, l=0, r=0),
+                    paper_bgcolor="#0e1117",
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
+            else:
+                st.caption("No hay datos GPS para esta actividad.")
+
+            st.divider()
+
+            # ── Actividades anteriores ────────────────────────────
+            if len(garmin_acts) > 1:
+                st.markdown("**📋 Actividades anteriores**")
+                for act in garmin_acts[1:]:
+                    pace_prev = _pace_str(act["distance_km"], act["duration_min"])
+                    label = (
+                        f"📅 {act['date']}  ·  {act['name']}  ·  "
+                        f"📏 {act['distance_km']} km  ·  ⏱️ {act['duration_min']:.0f} min  ·  🏃 {pace_prev}"
+                    )
+                    with st.expander(label):
+                        ac1, ac2, ac3, ac4 = st.columns(4)
+                        ac1.metric("Distancia",  f"{act['distance_km']} km")
+                        ac2.metric("Duración",   f"{act['duration_min']:.0f} min")
+                        ac3.metric("FC media",   f"{act['avg_hr'] or '—'} bpm")
+                        ac4.metric("Calorías",   f"{act['calories'] or '—'} kcal")
+                        # Mapa dentro del expander (minimizado)
+                        prev_coords = _garmin_coords(GARMIN_EMAIL, GARMIN_PASSWORD, act["activity_id"])
+                        if prev_coords:
+                            p_lats = [c[0] for c in prev_coords]
+                            p_lons = [c[1] for c in prev_coords]
+                            fig_prev = go.Figure(go.Scattermapbox(
+                                lat=p_lats, lon=p_lons, mode="lines",
+                                line=dict(width=3, color="#FF9800"), hoverinfo="none",
+                            ))
+                            fig_prev.update_layout(
+                                mapbox=dict(style="open-street-map",
+                                            center=dict(lat=sum(p_lats)/len(p_lats),
+                                                        lon=sum(p_lons)/len(p_lons)),
+                                            zoom=13),
+                                height=280, margin=dict(t=0,b=0,l=0,r=0),
+                                paper_bgcolor="#0e1117", showlegend=False,
+                            )
+                            st.plotly_chart(fig_prev, use_container_width=True)
+
+    st.divider()
+
+    # ── Historial manual (tabla deporte Supabase) ────────────────
     if dep_data:
         df_d = pd.DataFrame(dep_data)
-
-        # Gráfico de actividades del mes
-        if dep_mes:
-            actividades = pd.DataFrame(dep_mes)["actividad"].value_counts()
-            fig_act = go.Figure(go.Bar(
-                x=actividades.index.tolist(),
-                y=actividades.values.tolist(),
-                marker_color="#4CAF50",
-                text=actividades.values.tolist(),
-                textposition="outside",
-            ))
-            fig_act.update_layout(
-                title=f"Actividades en {MONTH_LABEL}",
-                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                font=dict(color="white"), height=260, margin=dict(t=50,b=20),
-            )
-            st.plotly_chart(fig_act, use_container_width=True)
-
-        st.subheader("📋 Historial de entrenamientos")
-        cols_dep = [c for c in ["fecha","actividad","duracion","distancia","sensacion","notas"] if c in df_d.columns]
-        df_show = df_d[cols_dep].copy()
-
-        # Mostrar con expanders para ver detalle
+        st.subheader("📋 Historial de entrenamientos (manual)")
         for _, row in df_d.head(20).iterrows():
             actividad = row.get("actividad", "—")
             fecha     = row.get("fecha", "—")
@@ -325,10 +513,9 @@ with tab2:
                 ec2.write(f"**Distancia:** {distancia or '—'}")
                 ec3.write(f"**Duración:** {duracion or '—'}")
                 ec1.write(f"**Sensación:** {sensacion or '—'}")
-                if notas:
-                    st.write(f"**Notas:** {notas}")
+                if notas: st.write(f"**Notas:** {notas}")
     else:
-        st.info("Sin entrenamientos registrados aún.")
+        st.info("Sin entrenamientos registrados aún. Usa el bot de Telegram o configura Garmin Connect.")
 
 # ════════════════════════════════════════════════════════════════
 # TAB 3 — HÁBITOS
@@ -343,31 +530,77 @@ with tab3:
     s4.metric("🕊️ Silencio",   f"{streak_val(streaks,'silencio')}d racha")
 
     if hab_data:
-        df_h  = pd.DataFrame(hab_data)
-        days  = max(len(df_h), 1)
-        counts = {
-            "Ducha fría 🚿":  int(pd.to_numeric(df_h.get("ducha_fria",  pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
-            "Té de clavo 🌿": int(pd.to_numeric(df_h.get("te_clavo",    pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
-            "Oración 🙏":     int(pd.to_numeric(df_h.get("oracion",     pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
-            "Silencio 🕊️":   int(pd.to_numeric(df_h.get("silencio",    pd.Series(dtype=bool)), errors="coerce").fillna(False).sum()),
-        }
+        df_h     = pd.DataFrame(hab_data)
         dias_mes = (date.today() - date(int(TODAY[:4]), int(TODAY[5:7]), 1)).days + 1
-        colors = ["#4CAF50" if v/dias_mes>=0.7 else "#FF9800" if v/dias_mes>=0.4 else "#f44336"
-                  for v in counts.values()]
-        fig = go.Figure(go.Bar(
-            x=list(counts.keys()), y=list(counts.values()), marker_color=colors,
-            text=[f"{v}/{dias_mes}" for v in counts.values()], textposition="outside",
+        HAB_COLS = [
+            ("ducha_fria",  "🚿 Ducha fría"),
+            ("te_clavo",    "🌿 Té de clavo"),
+            ("oracion",     "🙏 Oración"),
+            ("silencio",    "🕊️ Silencio"),
+            ("creatina",    "💊 Creatina"),
+        ]
+
+        # ── Donuts de consistencia por hábito ────────────────────
+        hab_fig_cols = st.columns(len(HAB_COLS))
+        for idx, (col_key, label) in enumerate(HAB_COLS):
+            if col_key in df_h.columns:
+                cnt = int(pd.to_numeric(df_h[col_key], errors="coerce").fillna(False).sum())
+            else:
+                cnt = 0
+            pct = cnt / dias_mes * 100 if dias_mes else 0
+            color = "#4CAF50" if pct >= 70 else "#FF9800" if pct >= 40 else "#f44336"
+            fig_d = go.Figure(go.Pie(
+                values=[cnt, max(dias_mes - cnt, 0)],
+                hole=0.65,
+                marker=dict(colors=[color, "#1e2130"]),
+                textinfo="none",
+                hoverinfo="none",
+            ))
+            fig_d.add_annotation(text=f"<b>{pct:.0f}%</b>",
+                                  x=0.5, y=0.5, showarrow=False,
+                                  font=dict(size=18, color="white"))
+            fig_d.update_layout(
+                title=dict(text=label, font=dict(size=12), x=0.5, xanchor="center"),
+                showlegend=False,
+                paper_bgcolor="#0e1117",
+                height=160, margin=dict(t=40,b=5,l=5,r=5),
+            )
+            hab_fig_cols[idx].plotly_chart(fig_d, use_container_width=True)
+            hab_fig_cols[idx].caption(f"{cnt}/{dias_mes} días")
+
+        # ── Heatmap tipo GitHub ───────────────────────────────────
+        st.subheader(f"📅 Heatmap — {MONTH_LABEL}")
+        hab_keys   = [k for k, _ in HAB_COLS if k in df_h.columns]
+        hab_labels = [l for k, l in HAB_COLS if k in df_h.columns]
+        df_h_sorted = df_h.sort_values("fecha")
+        heat_z, heat_text = [], []
+        for k in hab_keys:
+            row_z, row_t = [], []
+            for _, r in df_h_sorted.iterrows():
+                val = int(bool(pd.to_numeric(r.get(k, 0), errors="coerce")))
+                row_z.append(val)
+                row_t.append(f"{r.get('fecha','')}<br>{'✅' if val else '❌'}")
+            heat_z.append(row_z)
+            heat_text.append(row_t)
+
+        fig_heat = go.Figure(go.Heatmap(
+            z=heat_z, text=heat_text, hoverinfo="text",
+            y=hab_labels,
+            colorscale=[[0, "#1e2130"], [1, "#4CAF50"]],
+            zmin=0, zmax=1, showscale=False,
+            xgap=3, ygap=3,
         ))
-        fig.update_layout(
-            title=f"Hábitos cumplidos en {MONTH_LABEL}",
-            yaxis=dict(range=[0, dias_mes + 3]),
+        fig_heat.update_layout(
             paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-            font=dict(color="white"), height=300, margin=dict(t=50,b=20),
+            font=dict(color="white"),
+            height=220, margin=dict(t=10,b=20,l=120,r=10),
+            xaxis=dict(showticklabels=False, showgrid=False),
+            yaxis=dict(showgrid=False),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_heat, use_container_width=True)
 
         st.subheader("📋 Registro diario")
-        cols_h = [c for c in ["fecha","ducha_fria","te_clavo","oracion","silencio"] if c in df_h.columns]
+        cols_h = [c for c in ["fecha","ducha_fria","te_clavo","oracion","silencio","creatina"] if c in df_h.columns]
         st.dataframe(
             df_h[cols_h].sort_values("fecha", ascending=False).head(30),
             hide_index=True, use_container_width=True
@@ -410,32 +643,40 @@ with tab4:
     hoy_gras = sum(float(r.get("grasas_g") or 0) for r in hoy_data)
 
     st.subheader(f"📊 Progreso de hoy — {TODAY}")
-    h1, h2, h3, h4 = st.columns(4)
-    h1.metric("🔥 Kcal",    f"{hoy_kcal:.0f}", f"/{T_KCAL:.0f} — faltan {max(T_KCAL-hoy_kcal,0):.0f}")
-    h2.metric("💪 Proteína",f"{hoy_prot:.0f}g", f"/{T_PROT:.0f}g — faltan {max(T_PROT-hoy_prot,0):.0f}g")
-    h3.metric("🌾 Carbos",  f"{hoy_carbs:.0f}g",f"/{T_CARBS:.0f}g — faltan {max(T_CARBS-hoy_carbs,0):.0f}g")
-    h4.metric("🥑 Grasas",  f"{hoy_gras:.0f}g", f"/{T_GRASAS:.0f}g — faltan {max(T_GRASAS-hoy_gras,0):.0f}g")
 
-    macro_names  = ["🔥 Kcal", "💪 Proteína (g)", "🌾 Carbos (g)", "🥑 Grasas (g)"]
-    macro_actual = [hoy_kcal, hoy_prot, hoy_carbs, hoy_gras]
-    macro_target = [T_KCAL, T_PROT, T_CARBS, T_GRASAS]
-    macro_pct    = [min(a/t*100, 100) if t else 0 for a, t in zip(macro_actual, macro_target)]
-    fig_hoy = go.Figure()
-    fig_hoy.add_trace(go.Bar(
-        name="Consumido", x=macro_names, y=macro_actual,
-        marker_color=["#4CAF50" if p>=90 else "#FF9800" if p>=60 else "#f44336" for p in macro_pct],
-        text=[f"{p:.0f}%" for p in macro_pct], textposition="outside",
-    ))
-    fig_hoy.add_trace(go.Bar(
-        name="Target", x=macro_names, y=macro_target,
-        marker_color="rgba(255,255,255,0.12)",
-    ))
-    fig_hoy.update_layout(
-        barmode="overlay", title="Macros de hoy vs targets",
-        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-        font=dict(color="white"), height=280, margin=dict(t=40,b=20),
-    )
-    st.plotly_chart(fig_hoy, use_container_width=True)
+    # ── Donut rings para cada macro ──────────────────────────────
+    MACRO_DEF = [
+        ("🔥 Kcal",     hoy_kcal,  T_KCAL,   "#FF6B35", f"{hoy_kcal:.0f}/{T_KCAL:.0f}"),
+        ("💪 Proteína", hoy_prot,  T_PROT,   "#4CAF50", f"{hoy_prot:.0f}g/{T_PROT:.0f}g"),
+        ("🌾 Carbos",   hoy_carbs, T_CARBS,  "#2196F3", f"{hoy_carbs:.0f}g/{T_CARBS:.0f}g"),
+        ("🥑 Grasas",   hoy_gras,  T_GRASAS, "#FF9800", f"{hoy_gras:.0f}g/{T_GRASAS:.0f}g"),
+    ]
+    donut_cols = st.columns(4)
+    for idx, (label, actual, target, color, sub) in enumerate(MACRO_DEF):
+        pct = min(actual / target * 100, 100) if target else 0
+        remaining = max(target - actual, 0)
+        fig_ring = go.Figure(go.Pie(
+            values=[actual, remaining],
+            hole=0.68,
+            marker=dict(colors=[color, "#1a1e2e"]),
+            textinfo="none",
+            hoverinfo="none",
+            direction="clockwise",
+            rotation=90,
+        ))
+        fig_ring.add_annotation(
+            text=f"<b>{pct:.0f}%</b>",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=20, color="white"),
+        )
+        fig_ring.update_layout(
+            title=dict(text=label, font=dict(size=13), x=0.5, xanchor="center"),
+            showlegend=False,
+            paper_bgcolor="#0e1117",
+            height=170, margin=dict(t=40,b=0,l=5,r=5),
+        )
+        donut_cols[idx].plotly_chart(fig_ring, use_container_width=True)
+        donut_cols[idx].caption(sub)
     st.divider()
 
     alim_data = q("alimentacion", order="fecha", desc=True, limit=30)
@@ -608,14 +849,49 @@ with tab5:
 
     st.divider()
 
+    # ── Waterfall balance mes actual ─────────────────────────────
+    if total_i > 0 or total_g > 0:
+        wf_vals    = [total_i, -total_g, balance]
+        wf_labels  = ["💰 Ingresos", "💸 Gastos", "📊 Balance"]
+        wf_colors  = ["#4CAF50", "#f44336", "#4CAF50" if balance >= 0 else "#f44336"]
+        wf_measure = ["absolute", "relative", "total"]
+        fig_wf = go.Figure(go.Waterfall(
+            x=wf_labels, y=wf_vals,
+            measure=wf_measure,
+            text=[f"€{abs(v):.0f}" for v in wf_vals],
+            textposition="outside",
+            connector=dict(line=dict(color="rgba(255,255,255,0.2)", width=1)),
+            increasing=dict(marker=dict(color="#4CAF50")),
+            decreasing=dict(marker=dict(color="#f44336")),
+            totals=dict(marker=dict(color="#2196F3")),
+        ))
+        fig_wf.update_layout(
+            title=f"Flujo financiero — {MONTH_LABEL}",
+            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            font=dict(color="white"), height=260, margin=dict(t=50,b=20),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_wf, use_container_width=True)
+
     # ── Gráficos mes actual ──
     col_g, col_i = st.columns(2)
     with col_g:
         st.subheader("💸 Gastos este mes")
         if not df_g.empty:
             pc = df_g.groupby("categoria")["importe"].sum().reset_index().sort_values("importe", ascending=False)
-            fig_g = go.Figure(go.Pie(labels=pc["categoria"], values=pc["importe"],
-                hole=0.4, textinfo="label+percent"))
+            # Treemap moderno en lugar de pie
+            fig_g = go.Figure(go.Treemap(
+                labels=pc["categoria"],
+                parents=["" for _ in pc["categoria"]],
+                values=pc["importe"],
+                texttemplate="<b>%{label}</b><br>€%{value:.0f}<br>%{percentRoot:.0%}",
+                marker=dict(
+                    colorscale="RdYlGn",
+                    colorbar=dict(thickness=10),
+                    cmid=pc["importe"].mean(),
+                ),
+                hovertemplate="<b>%{label}</b><br>€%{value:.2f}<extra></extra>",
+            ))
             fig_g.update_layout(paper_bgcolor="#0e1117", font=dict(color="white"),
                 height=300, margin=dict(t=20,b=10))
             st.plotly_chart(fig_g, use_container_width=True)
@@ -624,12 +900,15 @@ with tab5:
     with col_i:
         st.subheader("💰 Ingresos este mes")
         if not df_i.empty:
-            pi = df_i.groupby("categoria")["importe"].sum().reset_index()
-            fig_i = go.Figure(go.Bar(x=pi["importe"], y=pi["categoria"],
-                orientation="h", marker_color="#4CAF50",
-                text=[f"€{v:.0f}" for v in pi["importe"]], textposition="outside"))
+            pi = df_i.groupby("categoria")["importe"].sum().reset_index().sort_values("importe")
+            fig_i = go.Figure(go.Bar(
+                x=pi["importe"], y=pi["categoria"],
+                orientation="h",
+                marker=dict(color=pi["importe"], colorscale="Greens", showscale=False),
+                text=[f"€{v:.0f}" for v in pi["importe"]], textposition="outside",
+            ))
             fig_i.update_layout(paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                font=dict(color="white"), height=300, margin=dict(t=20,b=10,r=60))
+                font=dict(color="white"), height=300, margin=dict(t=20,b=10,r=70))
             st.plotly_chart(fig_i, use_container_width=True)
         else:
             st.info("Sin ingresos este mes.")
@@ -637,7 +916,7 @@ with tab5:
     st.divider()
 
     # ── Editores interactivos ──
-    edit_tab_g, edit_tab_i, edit_tab_add = st.tabs(["✏️ Editar gastos", "✏️ Editar ingresos", "➕ Añadir"])
+    edit_tab_g, edit_tab_i, edit_tab_add, edit_tab_kbc = st.tabs(["✏️ Editar gastos", "✏️ Editar ingresos", "➕ Añadir", "🏦 Sincronizar KBC"])
 
     with edit_tab_g:
         if not df_g.empty:
@@ -726,6 +1005,172 @@ with tab5:
                 else:
                     st.warning("Rellena el importe y el concepto.")
 
+    with edit_tab_kbc:
+        st.markdown("""
+<div class="kbc-card">
+<h4 style="color:#2196F3;margin:0 0 6px 0">🏦 Importar extracto KBC</h4>
+<p style="color:#aaa;margin:0;font-size:0.9em;">Sube el CSV que descargas desde KBC Online Banking — gratis, sin registro</p>
+</div>
+""", unsafe_allow_html=True)
+        st.write("")
+
+        with st.expander("📋 ¿Cómo descargo el CSV de KBC?", expanded=False):
+            st.markdown("""
+1. Entra en **kbc.be** → *Online Banking* con tu tarjeta lector
+2. Ve a tu cuenta corriente → **Movimientos**
+3. Haz clic en **Exportar** (icono descarga arriba a la derecha)
+4. Elige formato **CSV** y el período que quieras
+5. Guarda el archivo y súbelo aquí abajo
+""")
+
+        kbc_file = st.file_uploader(
+            "Sube el CSV de KBC",
+            type=["csv"],
+            key="kbc_csv_uploader",
+            label_visibility="collapsed",
+        )
+
+        def _parse_kbc_csv(uploaded) -> list[dict]:
+            import io
+            raw = uploaded.getvalue()
+            # Intentar detectar encoding
+            for enc in ("utf-8-sig", "latin-1", "cp1252"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except Exception:
+                    text = raw.decode("latin-1", errors="replace")
+            # Detectar separador (KBC usa ; normalmente)
+            sep = ";" if text.count(";") > text.count(",") else ","
+            df_raw = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, header=0)
+            df_raw.columns = [c.strip().lower() for c in df_raw.columns]
+
+            # Mapear columnas — KBC tiene nombres en NL
+            col_map = {
+                "datum":          "date",
+                "date":           "date",
+                "bedrag":         "amount",
+                "montant":        "amount",
+                "amount":         "amount",
+                "omschrijving":   "description",
+                "description":    "description",
+                "mededeling":     "description",
+                "naam tegenpartij": "counterparty",
+                "naam van de tegenpartij": "counterparty",
+            }
+            df_raw = df_raw.rename(columns={k: v for k, v in col_map.items() if k in df_raw.columns})
+
+            if "date" not in df_raw.columns or "amount" not in df_raw.columns:
+                return []
+
+            rows = []
+            for _, r in df_raw.iterrows():
+                raw_date   = str(r.get("date", "")).strip()
+                raw_amount = str(r.get("amount", "")).strip().replace("\xa0", "").replace(" ", "")
+                raw_desc   = str(r.get("description", "") or r.get("counterparty", "")).strip()
+
+                # Parsear fecha DD/MM/YYYY o YYYY-MM-DD
+                try:
+                    if "/" in raw_date:
+                        parts = raw_date.split("/")
+                        if len(parts[2]) == 4:  # DD/MM/YYYY
+                            parsed_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                        else:
+                            parsed_date = raw_date
+                    else:
+                        parsed_date = raw_date[:10]
+                except Exception:
+                    continue
+
+                # Parsear importe (coma decimal belga)
+                try:
+                    amount_clean = raw_amount.replace(".", "").replace(",", ".")
+                    amount = float(amount_clean)
+                except Exception:
+                    continue
+
+                if not parsed_date or len(parsed_date) < 8:
+                    continue
+
+                rows.append({
+                    "date":        parsed_date,
+                    "amount":      amount,
+                    "description": raw_desc[:100] if raw_desc else "KBC",
+                })
+            return rows
+
+        if kbc_file:
+            with st.spinner("Leyendo CSV..."):
+                try:
+                    from kbc_connector import auto_categorize as _kbc_cat
+                except ImportError:
+                    def _kbc_cat(desc):
+                        return ("gastos", "Extra")
+
+                txs_raw = _parse_kbc_csv(kbc_file)
+
+            if not txs_raw:
+                st.error("No se pudo leer el archivo. Verifica que sea el CSV de KBC (formato estándar de exportación).")
+            else:
+                preview_rows = []
+                for t in txs_raw:
+                    tabla_dest, cat = _kbc_cat(t["description"])
+                    preview_rows.append({
+                        "Fecha":       t["date"],
+                        "Descripción": t["description"][:48],
+                        "€":           t["amount"],
+                        "Tipo":        "💰 Ingreso" if tabla_dest == "ingresos" else "💸 Gasto",
+                        "Categoría":   cat,
+                        "_tabla":      tabla_dest,
+                    })
+
+                df_prev = pd.DataFrame(preview_rows)
+                n_gastos   = int((df_prev["_tabla"] == "gastos").sum())
+                n_ingresos = int((df_prev["_tabla"] == "ingresos").sum())
+
+                kbc_info1, kbc_info2, kbc_info3 = st.columns(3)
+                kbc_info1.metric("Transacciones", len(preview_rows))
+                kbc_info2.metric("Gastos", n_gastos)
+                kbc_info3.metric("Ingresos", n_ingresos)
+
+                st.dataframe(
+                    df_prev[["Fecha", "Descripción", "€", "Tipo", "Categoría"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={"€": st.column_config.NumberColumn("€", format="%.2f")},
+                )
+
+                kbc_btn1, kbc_btn2 = st.columns(2)
+                with kbc_btn1:
+                    if st.button("✅ Importar todo al dashboard", type="primary", use_container_width=True, key="kbc_import_all"):
+                        imported = 0
+                        for row in preview_rows:
+                            ok = sb_insert(row["_tabla"], {
+                                "fecha":     row["Fecha"],
+                                "categoria": row["Categoría"],
+                                "concepto":  row["Descripción"],
+                                "importe":   abs(row["€"]),
+                            })
+                            if ok:
+                                imported += 1
+                        st.success(f"✅ {imported} de {len(preview_rows)} transacciones importadas.")
+                        st.rerun()
+                with kbc_btn2:
+                    gastos_only = [r for r in preview_rows if r["_tabla"] == "gastos"]
+                    if st.button(f"💸 Solo gastos ({n_gastos})", use_container_width=True, key="kbc_import_gastos"):
+                        imported = 0
+                        for row in gastos_only:
+                            ok = sb_insert("gastos", {
+                                "fecha":     row["Fecha"],
+                                "categoria": row["Categoría"],
+                                "concepto":  row["Descripción"],
+                                "importe":   abs(row["€"]),
+                            })
+                            if ok:
+                                imported += 1
+                        st.success(f"✅ {imported} gastos importados.")
+                        st.rerun()
+
 # ════════════════════════════════════════════════════════════════
 # TAB 6 — DIARIO & IDEAS
 # ════════════════════════════════════════════════════════════════
@@ -749,15 +1194,7 @@ with tab6:
         else:
             st.info("Sin entradas de diario aún.")
 
-        st.subheader("📚 Léxico")
-        lex = q("lexico", order="fecha", desc=True, limit=20)
-        if lex:
-            for l in lex:
-                with st.expander(f"📖 {l.get('palabra','')} — {l.get('fecha','')}"):
-                    st.write(f"**Definición:** {l.get('definicion','—')}")
-                    if l.get("ejemplo"): st.write(f"**Ejemplo:** _{l['ejemplo']}_")
-        else:
-            st.info("Sin palabras en el léxico aún.")
+        # (Léxico movido abajo, sección full-width con Gemini)
 
     with col_i:
         st.subheader("💼 Ideas de negocio")
@@ -786,6 +1223,158 @@ with tab6:
                     if r.get("contexto"): st.write(f"**Contexto:** {r['contexto']}")
         else:
             st.info("Sin refranes aún.")
+
+    # ════════════════════════════════════════════════════════════
+    # LÉXICO & ANÁLISIS GEMINI — Sección full-width
+    # ════════════════════════════════════════════════════════════
+    st.divider()
+    st.subheader("📚 Léxico & Análisis IA")
+
+    # ── Analizador de página (Gemini) ────────────────────────────
+    libros_activos = q("libros", select="id,titulo", filters={"estado": "in.(leyendo,leido)"})
+    titulos_libros = [l["titulo"] for l in libros_activos] if libros_activos else []
+    titulos_opts   = titulos_libros + ["Otro libro…"]
+
+    gem_col_img, gem_col_result = st.columns([1, 1])
+
+    with gem_col_img:
+        st.markdown("**📷 Sube la foto de la página**")
+        libro_gem = st.selectbox("Libro actual", titulos_opts, key="gem_libro")
+        if libro_gem == "Otro libro…":
+            libro_gem = st.text_input("Nombre del libro:", key="gem_libro_txt")
+        uploaded_page = st.file_uploader(
+            "Foto de la página del libro",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="gem_uploader",
+            label_visibility="collapsed",
+        )
+        if uploaded_page:
+            st.image(uploaded_page, use_container_width=True, caption=f"📖 {libro_gem}")
+
+    with gem_col_result:
+        st.markdown("**🤖 Análisis de Gemini**")
+
+        if not GEMINI_API_KEY:
+            st.info("Añade `GEMINI_API_KEY` en los secrets de Streamlit para activar el análisis con IA.")
+        elif not uploaded_page:
+            st.markdown(
+                """<div style="background:#1a1e2e;border-radius:12px;padding:20px;
+                border:1px dashed rgba(255,255,255,0.15);color:#888;text-align:center;margin-top:20px;">
+                📷 Sube una foto de la página del libro<br>para que Gemini la explique
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        else:
+            if st.button("🔍 Analizar con Gemini", type="primary", use_container_width=True, key="btn_gemini"):
+                with st.spinner("Gemini está analizando la página... ⏳"):
+                    try:
+                        from gemini_connector import analyze_book_page as _gem_analyze
+                        img_bytes = uploaded_page.getvalue()
+                        result = _gem_analyze(GEMINI_API_KEY, img_bytes, libro_gem or "libro")
+                        st.session_state["gem_result"] = result
+                        st.session_state["gem_libro_name"] = libro_gem or "libro"
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        if "gem_result" in st.session_state:
+            gem_res = st.session_state["gem_result"]
+            gem_libro_name = st.session_state.get("gem_libro_name", "libro")
+
+            if "error" in gem_res:
+                st.error(f"❌ {gem_res['error']}")
+            else:
+                # ── Explicación ──────────────────────────────────
+                st.markdown("**📖 Explicación**")
+                st.markdown(
+                    f"""<div style="background:#1a1e2e;border-radius:10px;padding:16px;
+                    border-left:3px solid #9C27B0;font-size:0.95em;line-height:1.6;">
+                    {gem_res.get('explicacion','').replace(chr(10),'<br>')}
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+                # ── Palabras detectadas ───────────────────────────
+                palabras_gem = gem_res.get("palabras", [])
+                if palabras_gem:
+                    st.markdown(f"**🔤 Palabras detectadas ({len(palabras_gem)})**")
+                    for pw in palabras_gem:
+                        pw_word = pw.get("palabra", "")
+                        pw_def  = pw.get("definicion", "")
+                        pw_uso  = pw.get("uso_en_libro", "")
+                        already = any(
+                            l.get("palabra","").lower() == pw_word.lower()
+                            for l in q("lexico", select="palabra", filters={"palabra": f"ilike.{pw_word}"})
+                        )
+                        badge = "✅ Ya en léxico" if already else ""
+                        st.markdown(
+                            f"""<div style="background:#1e2130;border-radius:8px;padding:12px;
+                            margin:6px 0;border:1px solid rgba(255,255,255,0.08);">
+                            <b style="color:#CE93D8;">{pw_word}</b>
+                            {f'<span style="color:#4CAF50;font-size:0.8em;margin-left:8px;">{badge}</span>' if badge else ''}
+                            <br><span style="color:#ccc;font-size:0.9em;">{pw_def}</span>
+                            {f'<br><em style="color:#888;font-size:0.85em;">"{pw_uso}"</em>' if pw_uso else ''}
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                        if not already:
+                            if st.button(f"✚ Añadir «{pw_word}» al léxico",
+                                         key=f"add_lex_{pw_word}_{id(pw)}", use_container_width=True):
+                                ok = sb_insert("lexico", {
+                                    "fecha":        TODAY,
+                                    "palabra":      pw_word,
+                                    "definicion":   pw_def,
+                                    "ejemplo":      pw_uso,
+                                    "origen_libro": gem_libro_name,
+                                    "uso_en_libro": pw_uso,
+                                })
+                                if ok:
+                                    st.success(f"✅ «{pw_word}» añadida al léxico.")
+                                    st.rerun()
+                else:
+                    st.info("No se detectaron palabras difíciles en este fragmento.")
+
+                if st.button("🔄 Nueva análisis", key="btn_gem_clear"):
+                    del st.session_state["gem_result"]
+                    st.rerun()
+
+    st.divider()
+
+    # ── Léxico completo ──────────────────────────────────────────
+    lex_all = q("lexico", order="fecha", desc=True)
+    total_pal = len(lex_all) if lex_all else 0
+    lex_col1, lex_col2 = st.columns([3, 1])
+    with lex_col1:
+        st.markdown(f"**🔤 Mi léxico completo — {total_pal} palabras**")
+    with lex_col2:
+        lex_busca = st.text_input("🔍 Buscar...", key="lex_search", label_visibility="collapsed",
+                                   placeholder="🔍 Buscar palabra...")
+
+    if lex_all:
+        if lex_busca:
+            lex_filtrado = [l for l in lex_all
+                            if lex_busca.lower() in l.get("palabra","").lower()
+                            or lex_busca.lower() in l.get("definicion","").lower()]
+        else:
+            lex_filtrado = lex_all
+
+        for lx in lex_filtrado[:50]:
+            pw   = lx.get("palabra", "")
+            defi = lx.get("definicion", "—")
+            uso  = lx.get("uso_en_libro") or lx.get("ejemplo", "")
+            orig = lx.get("origen_libro", "")
+            fecha= lx.get("fecha", "")
+            header = f"📖 **{pw}**"
+            if orig: header += f"  ·  _{orig}_"
+            header += f"  ·  {fecha}"
+            with st.expander(header):
+                st.write(f"**Definición:** {defi}")
+                if uso:  st.write(f"**Uso en el libro:** _{uso}_")
+                if orig: st.caption(f"📚 Libro: {orig}")
+
+        if len(lex_filtrado) > 50:
+            st.caption(f"Mostrando 50 de {len(lex_filtrado)} palabras.")
+    else:
+        st.info("Sin palabras en el léxico aún. Analiza una página de tu libro con Gemini.")
 
 # ════════════════════════════════════════════════════════════════
 # TAB 7 — GASTOS FAMILIA
@@ -1066,13 +1655,13 @@ with tab_lectura:
 
     libros_data = q("libros", order="titulo")
     if not libros_data:
-        st.info("La biblioteca esta vacia. Ejecuta `resources/populate_libros.py` despues de que termine la descarga.")
+        st.info("La biblioteca está vacía. Ejecuta `resources/populate_libros.py` después de que termine la descarga.")
         st.stop()
 
     df_lib = pd.DataFrame(libros_data)
     today_lec = str(date.today())
 
-    # ── Metricas ──
+    # ── Métricas ────────────────────────────────────────────────
     total_lib   = len(df_lib)
     leidos_lib  = int((df_lib["estado"] == "leido").sum())
     leyendo_lib = int((df_lib["estado"] == "leyendo").sum())
@@ -1080,13 +1669,13 @@ with tab_lectura:
 
     lm1, lm2, lm3, lm4 = st.columns(4)
     lm1.metric("Biblioteca", f"{total_lib:,} libros")
-    lm2.metric("Leidos", leidos_lib)
+    lm2.metric("Leídos", leidos_lib)
     lm3.metric("Leyendo ahora", leyendo_lib)
-    lm4.metric("Categorias exploradas", cats_leidas)
+    lm4.metric("Categorías exploradas", cats_leidas)
 
     st.divider()
 
-    # ── Libro actual ──
+    # ── Libro actual ────────────────────────────────────────────
     leyendo_df = df_lib[df_lib["estado"] == "leyendo"]
     if len(leyendo_df) > 0:
         libro_actual = leyendo_df.iloc[0]
@@ -1102,29 +1691,195 @@ with tab_lectura:
         with lcb:
             rating_val = st.slider("Rating", 1, 5, int(libro_actual.get("rating") or 3), key="lec_rating")
             notas_val  = st.text_area("Notas", value=libro_actual.get("notas") or "", height=80, key="lec_notas")
-            if st.button("Marcar como leido", key="lec_btn_leido"):
+            if st.button("Marcar como leído", key="lec_btn_leido"):
                 ok = sb_patch("libros", int(libro_actual["id"]), {
                     "estado": "leido", "rating": rating_val,
                     "fecha_fin": today_lec, "notas": notas_val,
                 })
                 if ok:
-                    st.success("Libro marcado como leido!")
+                    st.success("¡Libro marcado como leído!")
                     st.rerun()
         st.divider()
 
-    # ── Recomendacion semanal ──
-    st.subheader("Recomendacion semanal")
+    # ════════════════════════════════════════════════════════════
+    # SECCIÓN: Libros leídos — Grid + Panel lateral (Opción C)
+    # ════════════════════════════════════════════════════════════
+    leidos_rows = df_lib[df_lib["estado"] == "leido"].copy()
+
+    if len(leidos_rows) > 0:
+        st.subheader("📕 Libros leídos")
+
+        col_lista, col_ficha = st.columns([3, 7])
+
+        with col_lista:
+            st.markdown(
+                """<div style="max-height:640px;overflow-y:auto;padding-right:4px;">""",
+                unsafe_allow_html=True,
+            )
+            for _, lb in leidos_rows.sort_values("fecha_fin", ascending=False).iterrows():
+                lb_id     = int(lb["id"])
+                lb_titulo = lb.get("titulo") or "Sin título"
+                lb_autor  = lb.get("autor") or ""
+                lb_rating = int(lb.get("rating") or 0)
+                lb_portada = lb.get("portada_url") if "portada_url" in lb.index else None
+                is_sel = st.session_state.get("lec_sel_id") == lb_id
+
+                # Portada si existe
+                if lb_portada:
+                    try:
+                        st.image(lb_portada, width=70)
+                    except Exception:
+                        pass
+
+                stars = "⭐" * lb_rating + "·" * (5 - lb_rating)
+                btn_label = f"{'▶ ' if is_sel else ''}{lb_titulo[:28]}"
+                if st.button(btn_label, key=f"lec_sel_{lb_id}", use_container_width=True):
+                    st.session_state["lec_sel_id"] = lb_id
+                    st.rerun()
+                st.caption(f"{lb_autor[:22]}  {stars}")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with col_ficha:
+            sel_id = st.session_state.get("lec_sel_id")
+            # Auto-seleccionar el primer libro si ninguno está seleccionado
+            if sel_id is None and len(leidos_rows) > 0:
+                sel_id = int(leidos_rows.sort_values("fecha_fin", ascending=False).iloc[0]["id"])
+                st.session_state["lec_sel_id"] = sel_id
+
+            sel_rows = leidos_rows[leidos_rows["id"] == sel_id]
+            if len(sel_rows) > 0:
+                lb = sel_rows.iloc[0]
+                lb_titulo = lb.get("titulo") or "Sin título"
+                lb_autor  = lb.get("autor") or "—"
+                lb_cat    = lb.get("categoria") or "—"
+                lb_rating = int(lb.get("rating") or 0)
+                lb_fecha_fin = lb.get("fecha_fin") or "—"
+                lb_portada = lb.get("portada_url") if "portada_url" in lb.index else None
+
+                # Header del libro
+                hdr_a, hdr_b = st.columns([4, 1])
+                with hdr_a:
+                    stars_full = "⭐" * lb_rating
+                    st.markdown(
+                        f"""<div style="background:linear-gradient(135deg,#1e2130,#252a3d);
+                        border-radius:12px;padding:16px 20px;border-left:4px solid #CE93D8;">
+                        <h3 style="margin:0 0 4px 0;color:#fff;">{lb_titulo}</h3>
+                        <p style="color:#aaa;margin:2px 0;font-size:0.9em;">{lb_autor} &nbsp;·&nbsp; {lb_cat}</p>
+                        <p style="margin:6px 0 2px 0;font-size:1.1em;">{stars_full or '(sin rating)'}</p>
+                        <p style="color:#666;font-size:0.8em;">Terminado: {lb_fecha_fin}</p>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                with hdr_b:
+                    if lb_portada:
+                        try:
+                            st.image(lb_portada, width=90)
+                        except Exception:
+                            pass
+                    if lb.get("drive_url"):
+                        st.link_button("📂 Drive", lb["drive_url"])
+
+                st.write("")
+
+                # Tabs internos del libro
+                tab_res, tab_apr, tab_pal, tab_not, tab_edit = st.tabs(
+                    ["📋 Resumen", "💡 Aprendizajes", "🔤 Palabras", "📝 Notas", "✏️ Editar"]
+                )
+
+                with tab_res:
+                    resumen_val = lb.get("resumen") if "resumen" in lb.index else None
+                    if resumen_val:
+                        st.markdown(resumen_val)
+                    else:
+                        st.info("Sin resumen todavía. Ve a ✏️ Editar para añadir uno.")
+
+                with tab_apr:
+                    apr_val = lb.get("aprendizajes") if "aprendizajes" in lb.index else None
+                    if apr_val:
+                        st.markdown(apr_val)
+                    else:
+                        st.info("Sin aprendizajes todavía. Ve a ✏️ Editar para añadirlos.")
+
+                with tab_pal:
+                    # Palabras del léxico vinculadas a este libro
+                    lex_libro = q("lexico", filters={"origen_libro": f"ilike.{lb_titulo}"})
+                    if lex_libro:
+                        st.markdown(f"**{len(lex_libro)} palabras aprendidas en este libro**")
+                        for lx in lex_libro:
+                            with st.expander(f"📖 **{lx.get('palabra','')}**"):
+                                st.write(f"**Definición:** {lx.get('definicion','—')}")
+                                uso = lx.get("uso_en_libro") or lx.get("ejemplo","")
+                                if uso:
+                                    st.write(f"**Uso en el libro:** _{uso}_")
+                    else:
+                        st.info("No hay palabras del léxico vinculadas a este libro aún. Analiza páginas con Gemini en el tab 📖 Diario & Ideas.")
+
+                with tab_not:
+                    notas_libro = lb.get("notas") or ""
+                    if notas_libro:
+                        st.markdown(notas_libro)
+                    else:
+                        st.info("Sin notas. Puedes editarlas en ✏️ Editar.")
+
+                with tab_edit:
+                    st.markdown("**Editar ficha del libro**")
+                    e_portada  = st.text_input(
+                        "URL portada (imagen)",
+                        value=lb_portada or "",
+                        key=f"e_portada_{sel_id}",
+                        placeholder="https://…/portada.jpg",
+                    )
+                    e_rating   = st.slider("Rating", 1, 5, lb_rating or 3, key=f"e_rating_{sel_id}")
+                    e_resumen  = st.text_area(
+                        "Resumen del libro",
+                        value=(lb.get("resumen") if "resumen" in lb.index else None) or "",
+                        height=150, key=f"e_res_{sel_id}",
+                        placeholder="Breve resumen de los temas principales…",
+                    )
+                    e_apren = st.text_area(
+                        "Aprendizajes clave",
+                        value=(lb.get("aprendizajes") if "aprendizajes" in lb.index else None) or "",
+                        height=120, key=f"e_apr_{sel_id}",
+                        placeholder="• Aprendizaje 1\n• Aprendizaje 2\n…",
+                    )
+                    e_notas = st.text_area(
+                        "Notas personales",
+                        value=lb.get("notas") or "",
+                        height=100, key=f"e_notas_{sel_id}",
+                    )
+                    if st.button("💾 Guardar cambios", key=f"e_save_{sel_id}", type="primary"):
+                        payload = {
+                            "rating":       e_rating,
+                            "notas":        e_notas,
+                            "portada_url":  e_portada or None,
+                            "resumen":      e_resumen or None,
+                            "aprendizajes": e_apren or None,
+                        }
+                        ok = sb_patch("libros", sel_id, payload)
+                        if ok:
+                            st.success("✅ Cambios guardados.")
+                            st.rerun()
+                        else:
+                            st.error("Error al guardar. Verifica que el SQL de las columnas nuevas fue ejecutado en Supabase.")
+            else:
+                st.info("Selecciona un libro de la lista.")
+
+        st.divider()
+
+    # ── Recomendación semanal ────────────────────────────────────
+    st.subheader("Recomendación semanal")
     cats_disponibles = sorted(
         df_lib[df_lib["estado"] == "pendiente"]["categoria"].dropna().unique().tolist()
     )
     if cats_disponibles:
         rca, rcb = st.columns([3, 1])
         with rca:
-            cat_sel = st.selectbox("Categoria", cats_disponibles, key="lec_cat")
+            cat_sel = st.selectbox("Categoría", cats_disponibles, key="lec_cat")
         with rcb:
             st.write("")
             st.write("")
-            btn_recom = st.button("Dame una recomendacion", key="lec_btn_recom")
+            btn_recom = st.button("Dame una recomendación", key="lec_btn_recom")
 
         if btn_recom:
             pendientes_cat = df_lib[
@@ -1142,7 +1897,7 @@ with tab_lectura:
 <div style="background:#1e2130;border-radius:8px;padding:16px;border-left:4px solid #4CAF50;margin:8px 0">
 <h4 style="color:#4CAF50;margin:0 0 6px 0">{rec.get('titulo','—')}</h4>
 <p style="color:#ccc;margin:2px 0"><b>Autor:</b> {rec.get('autor','—')}</p>
-<p style="color:#ccc;margin:2px 0"><b>Categoria:</b> {rec.get('categoria','—')}</p>
+<p style="color:#ccc;margin:2px 0"><b>Categoría:</b> {rec.get('categoria','—')}</p>
 </div>
 """, unsafe_allow_html=True)
             if rec.get("drive_url"):
@@ -1157,14 +1912,14 @@ with tab_lectura:
                 })
                 if ok:
                     del st.session_state["lec_recom"]
-                    st.success(f"Empezando '{rec['titulo']}'!")
+                    st.success(f"¡Empezando '{rec['titulo']}'!")
                     st.rerun()
     else:
-        st.info("No hay libros pendientes. Has leido toda la biblioteca!")
+        st.info("¡No hay libros pendientes. Has leído toda la biblioteca!")
 
     st.divider()
 
-    # ── Estadisticas ──
+    # ── Estadísticas ────────────────────────────────────────────
     if leidos_lib > 0:
         st.subheader("Progreso de lectura")
         por_cat = (
@@ -1180,7 +1935,7 @@ with tab_lectura:
                 text=por_cat["leidos"], textposition="outside",
             ))
             fig_cat.update_layout(
-                title="Libros leidos por categoria",
+                title="Libros leídos por categoría",
                 paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
                 font=dict(color="white"),
                 height=max(200, len(por_cat) * 30),
@@ -1193,32 +1948,32 @@ with tab_lectura:
             .sort_values("fecha_fin", ascending=False)
             .head(5)
         )
-        st.caption("Ultimos 5 leidos:")
+        st.caption("Últimos 5 leídos:")
         cols_ult = [c for c in ["titulo", "autor", "categoria", "rating", "fecha_fin"] if c in ultimos.columns]
         st.dataframe(
             ultimos[cols_ult].rename(columns={
-                "titulo": "Titulo", "autor": "Autor", "categoria": "Categoria",
+                "titulo": "Título", "autor": "Autor", "categoria": "Categoría",
                 "rating": "Rating", "fecha_fin": "Fecha fin",
             }),
             hide_index=True, use_container_width=True,
         )
         st.divider()
 
-    # ── Biblioteca completa ──
+    # ── Biblioteca completa ──────────────────────────────────────
     st.subheader("Biblioteca completa")
     filtro_cats = st.multiselect(
-        "Filtrar por categoria",
+        "Filtrar por categoría",
         sorted(df_lib["categoria"].dropna().unique().tolist()),
         key="lec_filtro_cats",
     )
     filtro_estado = st.radio(
-        "Estado", ["Todos", "Pendiente", "Leyendo", "Leido"], horizontal=True, key="lec_filtro_estado"
+        "Estado", ["Todos", "Pendiente", "Leyendo", "Leído"], horizontal=True, key="lec_filtro_estado"
     )
     df_filtrado = df_lib.copy()
     if filtro_cats:
         df_filtrado = df_filtrado[df_filtrado["categoria"].isin(filtro_cats)]
     if filtro_estado != "Todos":
-        estado_map = {"Pendiente": "pendiente", "Leyendo": "leyendo", "Leido": "leido"}
+        estado_map = {"Pendiente": "pendiente", "Leyendo": "leyendo", "Leído": "leido"}
         df_filtrado = df_filtrado[df_filtrado["estado"] == estado_map[filtro_estado]]
 
     st.caption(f"Mostrando {len(df_filtrado):,} libros")
@@ -1227,7 +1982,7 @@ with tab_lectura:
     cols_show = [c for c in ["titulo", "autor", "categoria", "estado", "rating", "fecha_fin"] if c in df_mostrar.columns]
     st.dataframe(
         df_mostrar[cols_show + ["Abrir"]].rename(columns={
-            "titulo": "Titulo", "autor": "Autor", "categoria": "Categoria",
+            "titulo": "Título", "autor": "Autor", "categoria": "Categoría",
             "estado": "Estado", "rating": "Rating", "fecha_fin": "Terminado",
         }),
         column_config={
