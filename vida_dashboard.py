@@ -1298,10 +1298,10 @@ with tab6:
     titulos_libros = [l["titulo"] for l in libros_activos] if libros_activos else []
     titulos_opts   = titulos_libros + ["Otro libro…"]
 
-    gem_modo_tab, gem_foto_tab = st.tabs(["📋 Pegar desde Gemini", "📷 Subir foto"])
+    gem_modo_tab, gem_foto_tab = st.tabs(["📋 Pegar texto", "📷 Subir foto"])
 
     # ────────────────────────────────────────────────────────────
-    # MODO A — Pegar desde Gemini (flujo principal, 1 solo paso)
+    # MODO A — Pegar texto (flujo principal, 1 solo paso)
     # ────────────────────────────────────────────────────────────
     with gem_modo_tab:
         libro_paste = st.selectbox("Libro", titulos_opts, key="paste_libro",
@@ -1310,24 +1310,24 @@ with tab6:
             libro_paste = st.text_input("Nombre del libro:", key="paste_libro_txt",
                                         placeholder="Título del libro")
         texto_pegado = st.text_area(
-            "Pega aquí la respuesta de Gemini",
+            "Pega aquí el texto del libro",
             height=220,
             key="paste_gemini_text",
-            placeholder="Pega aquí la respuesta de Gemini y pulsa el botón…",
+            placeholder="Pega aquí el texto y pulsa el botón para extraer el léxico…",
             label_visibility="visible",
         )
 
         if st.button("🚀 Extraer y guardar todo automáticamente",
                      type="primary", use_container_width=True,
                      key="btn_auto_todo", disabled=not texto_pegado):
-            if not GEMINI_API_KEY:
-                st.error("Añade `GEMINI_API_KEY` en los secrets de Streamlit Cloud.")
+            if not GROQ_API_KEY:
+                st.error("Añade `GROQ_API_KEY` en los secrets de Streamlit Cloud.")
             else:
                 with st.spinner("Extrayendo palabras y guardando en el léxico… ⏳"):
                     try:
-                        import google.generativeai as _genai, json as _json, re as _re2
-                        _genai.configure(api_key=GEMINI_API_KEY)
-                        _m = _genai.GenerativeModel("gemini-2.0-flash")
+                        from groq import Groq as _Groq
+                        import json as _json, re as _re2
+                        _gc = _Groq(api_key=GROQ_API_KEY)
                         _p = f"""Del siguiente texto en español extrae TODAS las palabras filosóficas, latinas, griegas, arcaicas o poco comunes que un lector joven podría no conocer.
 
 Texto:
@@ -1339,8 +1339,13 @@ Responde SOLO JSON sin markdown:
 {{"palabras": [{{"palabra": "palabra exacta", "definicion": "significado claro", "uso_en_libro": "frase exacta del texto donde aparece"}}]}}
 
 Si no hay palabras difíciles: {{"palabras": []}}"""
-                        _r = _m.generate_content(_p, generation_config={"temperature": 0.2, "max_output_tokens": 1024})
-                        _raw2 = _re2.sub(r"^```(?:json)?|```$", "", _r.text.strip()).strip()
+                        _resp = _gc.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[{"role": "user", "content": _p}],
+                            temperature=0.2,
+                            max_tokens=1024,
+                        )
+                        _raw2 = _re2.sub(r"^```(?:json)?|```$", "", _resp.choices[0].message.content.strip()).strip()
                         # Extraer primer bloque JSON (ignora emojis o texto extra fuera del JSON)
                         _m2 = _re2.search(r'\{.*\}', _raw2, _re2.DOTALL)
                         if _m2:
@@ -1428,11 +1433,9 @@ Si no hay palabras difíciles: {{"palabras": []}}"""
                 st.image(uploaded_page, use_container_width=True, caption=f"📖 {libro_gem}")
 
         with gem_col_result:
-            st.markdown("**🤖 Análisis de Gemini**")
+            st.markdown("**🤖 Análisis IA**")
 
-            if not GEMINI_API_KEY:
-                st.info("Añade `GEMINI_API_KEY` en los secrets de Streamlit para activar el análisis con foto.")
-            elif not uploaded_page:
+            if not uploaded_page:
                 st.markdown(
                     """<div style="background:#1a1e2e;border-radius:12px;padding:20px;
                     border:1px dashed rgba(255,255,255,0.15);color:#888;text-align:center;margin-top:20px;">
@@ -1441,12 +1444,33 @@ Si no hay palabras difíciles: {{"palabras": []}}"""
                     unsafe_allow_html=True,
                 )
             else:
-                if st.button("🔍 Analizar con Gemini", type="primary", use_container_width=True, key="btn_gemini"):
-                    with st.spinner("Gemini está analizando la página... ⏳"):
+                if st.button("🔍 Analizar con IA", type="primary", use_container_width=True, key="btn_gemini"):
+                    with st.spinner("Analizando la página... ⏳"):
                         try:
-                            from gemini_connector import analyze_book_page as _gem_analyze
+                            import base64 as _b64, json as _json2
+                            from groq import Groq as _Groq2
+                            _gc2 = _Groq2(api_key=GROQ_API_KEY)
                             img_bytes = uploaded_page.getvalue()
-                            result = _gem_analyze(GEMINI_API_KEY, img_bytes, libro_gem or "libro")
+                            _img_b64 = _b64.b64encode(img_bytes).decode("utf-8")
+                            _vision_prompt = f"""Analiza esta página del libro "{libro_gem or 'libro'}".
+1) Explica en 2-3 frases el tema principal del fragmento.
+2) Extrae las palabras filosóficas, latinas, griegas, arcaicas o poco comunes.
+
+Responde SOLO JSON sin markdown:
+{{"explicacion": "texto explicativo", "palabras": [{{"palabra": "palabra", "definicion": "significado", "uso_en_libro": "frase del texto"}}]}}"""
+                            _vresp = _gc2.chat.completions.create(
+                                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                                messages=[{"role": "user", "content": [
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{_img_b64}"}},
+                                    {"type": "text", "text": _vision_prompt},
+                                ]}],
+                                temperature=0.3,
+                                max_tokens=1500,
+                            )
+                            import re as _re3
+                            _vraw = _re3.sub(r"^```(?:json)?|```$", "", _vresp.choices[0].message.content.strip()).strip()
+                            _vm = _re3.search(r'\{.*\}', _vraw, _re3.DOTALL)
+                            result = _json2.loads(_vm.group(0)) if _vm else {"error": "No se pudo parsear la respuesta."}
                             st.session_state["gem_result"] = result
                             st.session_state["gem_libro_name"] = libro_gem or "libro"
                         except Exception as e:
