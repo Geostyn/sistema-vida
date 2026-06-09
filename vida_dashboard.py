@@ -1230,112 +1230,254 @@ with tab6:
     st.divider()
     st.subheader("📚 Léxico & Análisis IA")
 
-    # ── Analizador de página (Gemini) ────────────────────────────
+    # ── Analizador Gemini ────────────────────────────────────────
     libros_activos = q("libros", select="id,titulo", filters={"estado": "in.(leyendo,leido)"})
     titulos_libros = [l["titulo"] for l in libros_activos] if libros_activos else []
     titulos_opts   = titulos_libros + ["Otro libro…"]
 
-    gem_col_img, gem_col_result = st.columns([1, 1])
+    gem_modo_tab, gem_foto_tab = st.tabs(["📋 Pegar desde Gemini", "📷 Subir foto"])
 
-    with gem_col_img:
-        st.markdown("**📷 Sube la foto de la página**")
-        libro_gem = st.selectbox("Libro actual", titulos_opts, key="gem_libro")
-        if libro_gem == "Otro libro…":
-            libro_gem = st.text_input("Nombre del libro:", key="gem_libro_txt")
-        uploaded_page = st.file_uploader(
-            "Foto de la página del libro",
-            type=["jpg", "jpeg", "png", "webp"],
-            key="gem_uploader",
-            label_visibility="collapsed",
-        )
-        if uploaded_page:
-            st.image(uploaded_page, use_container_width=True, caption=f"📖 {libro_gem}")
+    # ────────────────────────────────────────────────────────────
+    # MODO A — Pegar respuesta de Gemini (flujo principal)
+    # ────────────────────────────────────────────────────────────
+    with gem_modo_tab:
+        st.caption("Copia la respuesta de Gemini y pégala aquí. El dashboard extrae las palabras automáticamente.")
+        pm_col1, pm_col2 = st.columns([1, 1])
 
-    with gem_col_result:
-        st.markdown("**🤖 Análisis de Gemini**")
-
-        if not GEMINI_API_KEY:
-            st.info("Añade `GEMINI_API_KEY` en los secrets de Streamlit para activar el análisis con IA.")
-        elif not uploaded_page:
-            st.markdown(
-                """<div style="background:#1a1e2e;border-radius:12px;padding:20px;
-                border:1px dashed rgba(255,255,255,0.15);color:#888;text-align:center;margin-top:20px;">
-                📷 Sube una foto de la página del libro<br>para que Gemini la explique
-                </div>""",
-                unsafe_allow_html=True,
+        with pm_col1:
+            libro_paste = st.selectbox("Libro", titulos_opts, key="paste_libro")
+            if libro_paste == "Otro libro…":
+                libro_paste = st.text_input("Nombre del libro:", key="paste_libro_txt")
+            texto_pegado = st.text_area(
+                "Respuesta de Gemini",
+                height=280,
+                key="paste_gemini_text",
+                placeholder="Pega aquí la explicación que te dio Gemini…\n\nPuede ser texto largo, con palabras resaltadas, listas, etc.",
+                label_visibility="collapsed",
             )
-        else:
-            if st.button("🔍 Analizar con Gemini", type="primary", use_container_width=True, key="btn_gemini"):
-                with st.spinner("Gemini está analizando la página... ⏳"):
-                    try:
-                        from gemini_connector import analyze_book_page as _gem_analyze
-                        img_bytes = uploaded_page.getvalue()
-                        result = _gem_analyze(GEMINI_API_KEY, img_bytes, libro_gem or "libro")
-                        st.session_state["gem_result"] = result
-                        st.session_state["gem_libro_name"] = libro_gem or "libro"
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+            btn_extraer = st.button("🔍 Extraer palabras", type="primary",
+                                    use_container_width=True, key="btn_extraer_paste",
+                                    disabled=not texto_pegado)
 
-        if "gem_result" in st.session_state:
-            gem_res = st.session_state["gem_result"]
-            gem_libro_name = st.session_state.get("gem_libro_name", "libro")
+        with pm_col2:
+            st.markdown("**🔤 Palabras extraídas**")
 
-            if "error" in gem_res:
-                st.error(f"❌ {gem_res['error']}")
-            else:
-                # ── Explicación ──────────────────────────────────
-                st.markdown("**📖 Explicación**")
+            if btn_extraer and texto_pegado:
+                if GEMINI_API_KEY:
+                    # Usar Gemini API para extraer palabras del texto pegado
+                    with st.spinner("Extrayendo palabras... ⏳"):
+                        try:
+                            import google.generativeai as _genai
+                            _genai.configure(api_key=GEMINI_API_KEY)
+                            _model = _genai.GenerativeModel("gemini-1.5-flash-latest")
+                            _extract_prompt = f"""Del siguiente texto en español, extrae TODAS las palabras filosóficas, latinas, griegas, arcaicas, técnicas o poco comunes que un lector joven podría no conocer.
+
+Texto:
+\"\"\"
+{texto_pegado[:4000]}
+\"\"\"
+
+Responde SOLO en JSON sin markdown:
+{{"palabras": [{{"palabra": "la palabra exacta", "definicion": "significado claro en español", "uso_en_libro": "frase del texto donde aparece"}}]}}
+
+Si no hay palabras difíciles, devuelve {{"palabras": []}}"""
+                            _resp = _model.generate_content(
+                                _extract_prompt,
+                                generation_config={"temperature": 0.2, "max_output_tokens": 1024},
+                            )
+                            import json, re as _re
+                            _raw = _resp.text.strip()
+                            _raw = _re.sub(r"^```(?:json)?", "", _raw).strip()
+                            _raw = _re.sub(r"```$", "", _raw).strip()
+                            _extracted = json.loads(_raw)
+                            st.session_state["paste_result"] = _extracted.get("palabras", [])
+                            st.session_state["paste_texto"]  = texto_pegado
+                            st.session_state["paste_libro_name"] = libro_paste or "libro"
+                        except Exception as _e:
+                            st.error(f"Error: {_e}")
+                else:
+                    # Sin API key: mostrar el texto + formulario manual
+                    st.session_state["paste_result"]     = []
+                    st.session_state["paste_texto"]      = texto_pegado
+                    st.session_state["paste_libro_name"] = libro_paste or "libro"
+                    st.session_state["paste_manual"]     = True
+
+            # ── Mostrar texto pegado ──────────────────────────────
+            if "paste_texto" in st.session_state:
                 st.markdown(
-                    f"""<div style="background:#1a1e2e;border-radius:10px;padding:16px;
-                    border-left:3px solid #9C27B0;font-size:0.95em;line-height:1.6;">
-                    {gem_res.get('explicacion','').replace(chr(10),'<br>')}
+                    f"""<div style="background:#1a1e2e;border-radius:10px;padding:14px;
+                    border-left:3px solid #9C27B0;font-size:0.9em;line-height:1.6;
+                    max-height:180px;overflow-y:auto;margin-bottom:12px;">
+                    {st.session_state['paste_texto'][:1200].replace(chr(10),'<br>')}
                     </div>""",
                     unsafe_allow_html=True,
                 )
 
-                # ── Palabras detectadas ───────────────────────────
-                palabras_gem = gem_res.get("palabras", [])
-                if palabras_gem:
-                    st.markdown(f"**🔤 Palabras detectadas ({len(palabras_gem)})**")
-                    for pw in palabras_gem:
-                        pw_word = pw.get("palabra", "")
-                        pw_def  = pw.get("definicion", "")
-                        pw_uso  = pw.get("uso_en_libro", "")
-                        already = any(
-                            l.get("palabra","").lower() == pw_word.lower()
-                            for l in q("lexico", select="palabra", filters={"palabra": f"ilike.{pw_word}"})
-                        )
-                        badge = "✅ Ya en léxico" if already else ""
-                        st.markdown(
-                            f"""<div style="background:#1e2130;border-radius:8px;padding:12px;
-                            margin:6px 0;border:1px solid rgba(255,255,255,0.08);">
-                            <b style="color:#CE93D8;">{pw_word}</b>
-                            {f'<span style="color:#4CAF50;font-size:0.8em;margin-left:8px;">{badge}</span>' if badge else ''}
-                            <br><span style="color:#ccc;font-size:0.9em;">{pw_def}</span>
-                            {f'<br><em style="color:#888;font-size:0.85em;">"{pw_uso}"</em>' if pw_uso else ''}
-                            </div>""",
-                            unsafe_allow_html=True,
-                        )
-                        if not already:
-                            if st.button(f"✚ Añadir «{pw_word}» al léxico",
-                                         key=f"add_lex_{pw_word}_{id(pw)}", use_container_width=True):
-                                ok = sb_insert("lexico", {
-                                    "fecha":        TODAY,
-                                    "palabra":      pw_word,
-                                    "definicion":   pw_def,
-                                    "ejemplo":      pw_uso,
-                                    "origen_libro": gem_libro_name,
-                                    "uso_en_libro": pw_uso,
-                                })
-                                if ok:
-                                    st.success(f"✅ «{pw_word}» añadida al léxico.")
-                                    st.rerun()
-                else:
-                    st.info("No se detectaron palabras difíciles en este fragmento.")
+            paste_lib_name = st.session_state.get("paste_libro_name", "libro")
+            palabras_paste = st.session_state.get("paste_result", [])
 
-                if st.button("🔄 Nueva análisis", key="btn_gem_clear"):
-                    del st.session_state["gem_result"]
+            if palabras_paste:
+                st.markdown(f"**{len(palabras_paste)} palabras detectadas**")
+                for pw in palabras_paste:
+                    pw_word = pw.get("palabra", "")
+                    pw_def  = pw.get("definicion", "")
+                    pw_uso  = pw.get("uso_en_libro", "")
+                    already = bool(q("lexico", select="id", filters={"palabra": f"ilike.{pw_word}"}))
+                    badge   = "✅" if already else ""
+                    st.markdown(
+                        f"""<div style="background:#1e2130;border-radius:8px;padding:10px;
+                        margin:5px 0;border:1px solid rgba(255,255,255,0.08);">
+                        <b style="color:#CE93D8;">{pw_word}</b>
+                        {f'<span style="color:#4CAF50;font-size:0.8em;margin-left:6px;">{badge} ya guardada</span>' if already else ''}
+                        <br><span style="color:#ccc;font-size:0.88em;">{pw_def}</span>
+                        {f'<br><em style="color:#777;font-size:0.82em;">"{pw_uso}"</em>' if pw_uso else ''}
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                    if not already:
+                        if st.button(f"✚ «{pw_word}»", key=f"paste_add_{pw_word}", use_container_width=True):
+                            sb_insert("lexico", {
+                                "fecha": TODAY, "palabra": pw_word,
+                                "definicion": pw_def, "ejemplo": pw_uso,
+                                "origen_libro": paste_lib_name, "uso_en_libro": pw_uso,
+                            })
+                            st.success(f"✅ «{pw_word}» guardada.")
+                            st.rerun()
+
+                if st.button("✅ Añadir todas al léxico de golpe", type="primary",
+                             use_container_width=True, key="paste_add_all"):
+                    added = 0
+                    for pw in palabras_paste:
+                        pw_word = pw.get("palabra","")
+                        if pw_word and not q("lexico", select="id", filters={"palabra": f"ilike.{pw_word}"}):
+                            sb_insert("lexico", {
+                                "fecha": TODAY, "palabra": pw_word,
+                                "definicion": pw.get("definicion",""),
+                                "ejemplo": pw.get("uso_en_libro",""),
+                                "origen_libro": paste_lib_name,
+                                "uso_en_libro": pw.get("uso_en_libro",""),
+                            })
+                            added += 1
+                    st.success(f"✅ {added} palabras nuevas añadidas al léxico.")
                     st.rerun()
+
+            elif st.session_state.get("paste_manual") and "paste_texto" in st.session_state:
+                # Sin API: formulario manual
+                st.info("Sin `GEMINI_API_KEY` las palabras se añaden manualmente.")
+                with st.form("paste_manual_form"):
+                    m_word = st.text_input("Palabra")
+                    m_def  = st.text_area("Definición", height=60)
+                    m_uso  = st.text_input("Frase del libro donde aparece")
+                    if st.form_submit_button("✚ Añadir al léxico", type="primary"):
+                        if m_word:
+                            sb_insert("lexico", {
+                                "fecha": TODAY, "palabra": m_word,
+                                "definicion": m_def, "ejemplo": m_uso,
+                                "origen_libro": paste_lib_name, "uso_en_libro": m_uso,
+                            })
+                            st.success(f"✅ «{m_word}» añadida.")
+                            st.rerun()
+
+            if "paste_texto" in st.session_state:
+                if st.button("🔄 Limpiar", key="btn_paste_clear"):
+                    for k in ["paste_result", "paste_texto", "paste_libro_name", "paste_manual"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+
+    # ────────────────────────────────────────────────────────────
+    # MODO B — Subir foto (backup)
+    # ────────────────────────────────────────────────────────────
+    with gem_foto_tab:
+        gem_col_img, gem_col_result = st.columns([1, 1])
+
+        with gem_col_img:
+            st.markdown("**📷 Sube la foto de la página**")
+            libro_gem = st.selectbox("Libro actual", titulos_opts, key="gem_libro")
+            if libro_gem == "Otro libro…":
+                libro_gem = st.text_input("Nombre del libro:", key="gem_libro_txt")
+            uploaded_page = st.file_uploader(
+                "Foto de la página del libro",
+                type=["jpg", "jpeg", "png", "webp"],
+                key="gem_uploader",
+                label_visibility="collapsed",
+            )
+            if uploaded_page:
+                st.image(uploaded_page, use_container_width=True, caption=f"📖 {libro_gem}")
+
+        with gem_col_result:
+            st.markdown("**🤖 Análisis de Gemini**")
+
+            if not GEMINI_API_KEY:
+                st.info("Añade `GEMINI_API_KEY` en los secrets de Streamlit para activar el análisis con foto.")
+            elif not uploaded_page:
+                st.markdown(
+                    """<div style="background:#1a1e2e;border-radius:12px;padding:20px;
+                    border:1px dashed rgba(255,255,255,0.15);color:#888;text-align:center;margin-top:20px;">
+                    📷 Sube una foto de la página del libro
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+            else:
+                if st.button("🔍 Analizar con Gemini", type="primary", use_container_width=True, key="btn_gemini"):
+                    with st.spinner("Gemini está analizando la página... ⏳"):
+                        try:
+                            from gemini_connector import analyze_book_page as _gem_analyze
+                            img_bytes = uploaded_page.getvalue()
+                            result = _gem_analyze(GEMINI_API_KEY, img_bytes, libro_gem or "libro")
+                            st.session_state["gem_result"] = result
+                            st.session_state["gem_libro_name"] = libro_gem or "libro"
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+            if "gem_result" in st.session_state:
+                gem_res = st.session_state["gem_result"]
+                gem_libro_name = st.session_state.get("gem_libro_name", "libro")
+
+                if "error" in gem_res:
+                    st.error(f"❌ {gem_res['error']}")
+                else:
+                    st.markdown("**📖 Explicación**")
+                    st.markdown(
+                        f"""<div style="background:#1a1e2e;border-radius:10px;padding:16px;
+                        border-left:3px solid #9C27B0;font-size:0.95em;line-height:1.6;">
+                        {gem_res.get('explicacion','').replace(chr(10),'<br>')}
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                    palabras_gem = gem_res.get("palabras", [])
+                    if palabras_gem:
+                        st.markdown(f"**🔤 Palabras detectadas ({len(palabras_gem)})**")
+                        for pw in palabras_gem:
+                            pw_word = pw.get("palabra", "")
+                            pw_def  = pw.get("definicion", "")
+                            pw_uso  = pw.get("uso_en_libro", "")
+                            already = bool(q("lexico", select="id", filters={"palabra": f"ilike.{pw_word}"}))
+                            st.markdown(
+                                f"""<div style="background:#1e2130;border-radius:8px;padding:12px;
+                                margin:6px 0;border:1px solid rgba(255,255,255,0.08);">
+                                <b style="color:#CE93D8;">{pw_word}</b>
+                                {' <span style="color:#4CAF50;font-size:0.8em;">✅ ya guardada</span>' if already else ''}
+                                <br><span style="color:#ccc;font-size:0.9em;">{pw_def}</span>
+                                {f'<br><em style="color:#888;font-size:0.85em;">"{pw_uso}"</em>' if pw_uso else ''}
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
+                            if not already:
+                                if st.button(f"✚ Añadir «{pw_word}»",
+                                             key=f"add_lex_{pw_word}_{id(pw)}", use_container_width=True):
+                                    sb_insert("lexico", {
+                                        "fecha": TODAY, "palabra": pw_word,
+                                        "definicion": pw_def, "ejemplo": pw_uso,
+                                        "origen_libro": gem_libro_name, "uso_en_libro": pw_uso,
+                                    })
+                                    st.success(f"✅ «{pw_word}» añadida.")
+                                    st.rerun()
+                    else:
+                        st.info("No se detectaron palabras difíciles en este fragmento.")
+
+                    if st.button("🔄 Nueva análisis", key="btn_gem_clear"):
+                        del st.session_state["gem_result"]
+                        st.rerun()
 
     st.divider()
 
