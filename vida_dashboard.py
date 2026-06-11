@@ -19,13 +19,75 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* ── Desktop base ── */
+/* ── Limpieza de chrome de Streamlit ── */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+header[data-testid="stHeader"] { background: transparent; height: 2rem; }
+
+/* ── Métricas: tarjetas con acento ── */
 div[data-testid="stMetric"] {
   background: linear-gradient(135deg, #1e2130 0%, #252a40 100%);
   border-radius: 12px; padding: 14px;
   border: 1px solid rgba(255,255,255,0.06);
+  border-left: 3px solid rgba(76,175,80,0.55);
+  transition: transform .15s ease, border-color .15s ease;
 }
-.stTabs [data-baseweb="tab"] { font-size: 15px; }
+div[data-testid="stMetric"]:hover {
+  transform: translateY(-2px);
+  border-color: rgba(76,175,80,0.45);
+}
+
+/* ── Tabs: estilo pill + activo en verde ── */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 4px; background: #161a28;
+  border-radius: 12px; padding: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+  font-size: 15px; border-radius: 9px;
+  padding: 8px 14px;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+  background: rgba(76,175,80,0.18);
+  color: #4CAF50 !important;
+}
+.stTabs [data-baseweb="tab-highlight"] { background-color: #4CAF50; }
+
+/* ── Expanders: tarjetas ── */
+div[data-testid="stExpander"] {
+  background: #161a28;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+div[data-testid="stExpander"] summary {
+  padding: 12px 14px; font-size: 0.95rem;
+}
+div[data-testid="stExpander"] summary:hover { color: #4CAF50; }
+
+/* ── Botones e inputs ── */
+.stButton > button {
+  border-radius: 10px;
+  border: 1px solid rgba(76,175,80,0.4);
+  transition: all .15s ease;
+}
+.stButton > button:hover {
+  border-color: #4CAF50;
+  box-shadow: 0 0 10px rgba(76,175,80,0.25);
+}
+div[data-baseweb="select"] > div,
+.stTextInput input, .stNumberInput input, .stTextArea textarea {
+  border-radius: 10px !important;
+}
+
+/* ── Barras de progreso ── */
+.stProgress > div > div > div > div {
+  background: linear-gradient(90deg, #4CAF50, #8BC34A);
+  border-radius: 6px;
+}
+
+/* ── Dataframes y dividers ── */
+div[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
+hr { border-color: rgba(255,255,255,0.08); }
 
 /* ── Garmin map container ── */
 .garmin-map-card {
@@ -43,25 +105,37 @@ div[data-testid="stMetric"] {
 
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {
-  .block-container { padding: 0.6rem 0.6rem 1rem !important; max-width: 100% !important; }
+  .block-container { padding: 0.5rem 0.55rem 1rem !important; max-width: 100% !important; }
   section[data-testid="stSidebar"] { display: none !important; }
   h1 { font-size: 1.3rem !important; }
   h2 { font-size: 1.1rem !important; }
   h3 { font-size: 1rem !important; }
-  .stTabs [data-baseweb="tab-list"] { overflow-x: auto; flex-wrap: nowrap; }
-  .stTabs [data-baseweb="tab"] { font-size: 12px !important; padding: 6px 10px !important; white-space: nowrap; }
+  /* Tabs deslizables con el dedo */
+  .stTabs [data-baseweb="tab-list"] {
+    overflow-x: auto; flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+  .stTabs [data-baseweb="tab"] { font-size: 12px !important; padding: 8px 11px !important; white-space: nowrap; min-height: 40px; }
   .stButton > button { min-height: 44px !important; font-size: 0.95rem !important; width: 100%; }
-  div[data-testid="stMetric"] { padding: 8px !important; }
-  div[data-testid="stMetricValue"] { font-size: 1.1rem !important; }
-  div[data-testid="stMetricLabel"] { font-size: 0.75rem !important; }
+  div[data-testid="stMetric"] { padding: 9px !important; }
+  div[data-testid="stMetricValue"] { font-size: 1.05rem !important; }
+  div[data-testid="stMetricLabel"] { font-size: 0.72rem !important; }
   div[data-testid="stChatInput"] { position: sticky; bottom: 0; background: #0e1117; padding: 6px; }
-  /* Stack columns vertically on mobile by reducing min-width */
+  div[data-testid="stExpander"] summary { padding: 12px 10px; font-size: 0.85rem; min-height: 44px; }
+  /* Columnas: apilar en vertical, pero las métricas van 2 por fila */
   [data-testid="column"] { min-width: 100% !important; }
+  [data-testid="column"]:has(div[data-testid="stMetric"]) {
+    min-width: calc(50% - 0.5rem) !important;
+    flex: 1 1 calc(50% - 0.5rem) !important;
+  }
 }
 
 @media (max-width: 480px) {
   h1 { font-size: 1.1rem !important; }
-  .stTabs [data-baseweb="tab"] { font-size: 11px !important; padding: 4px 7px !important; }
+  .stTabs [data-baseweb="tab"] { font-size: 11px !important; padding: 6px 8px !important; }
+  div[data-testid="stMetricValue"] { font-size: 0.95rem !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -360,6 +434,109 @@ with tab2:
             font=dict(color="white"), height=240, margin=dict(t=50,b=20),
         )
         st.plotly_chart(fig_act, use_container_width=True)
+
+    st.divider()
+
+    # ════ DÍAS DE GYM — ejercicios, series, reps y peso ══════════
+    st.subheader("🏋️ Días de Gym")
+
+    DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    gym_data = q("gym_ejercicios", order="created_at", desc=False, limit=2000)
+
+    if not gym_data:
+        st.info("Aún no hay ejercicios de gym registrados. Díctale al bot: "
+                "*\"curl de bíceps 12 reps con 10kg\"* — cada repetición del mismo "
+                "ejercicio en el día se guarda como la siguiente serie.")
+    else:
+        df_gym = pd.DataFrame(gym_data)
+        df_gym["reps"] = pd.to_numeric(df_gym.get("reps"), errors="coerce").fillna(0).astype(int)
+        df_gym["peso"] = pd.to_numeric(df_gym.get("peso"), errors="coerce").fillna(0.0)
+        df_gym["volumen"] = df_gym["reps"] * df_gym["peso"]
+
+        fechas_gym = sorted(df_gym["fecha"].unique(), reverse=True)
+        gym_mes = df_gym[df_gym["fecha"] >= MONTH_START]
+
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("📅 Días de gym (mes)",  gym_mes["fecha"].nunique())
+        g2.metric("🔩 Series (mes)",       len(gym_mes))
+        g3.metric("🏋️ Volumen mes",       f"{gym_mes['volumen'].sum():,.0f} kg")
+        ult_dia = df_gym[df_gym["fecha"] == fechas_gym[0]]
+        g4.metric("⚡ Último entreno",     f"{ult_dia['volumen'].sum():,.0f} kg")
+
+        # ── Progresión: volumen por día de gym ───────────────────
+        vol_dia = df_gym.groupby("fecha")["volumen"].sum().reset_index()
+        if len(vol_dia) > 1:
+            fig_vol = go.Figure(go.Bar(
+                x=vol_dia["fecha"], y=vol_dia["volumen"],
+                marker=dict(color="#4CAF50"),
+                text=[f"{v:,.0f}" for v in vol_dia["volumen"]],
+                textposition="outside",
+            ))
+            fig_vol.update_layout(
+                title="📈 Volumen total por día de gym (kg levantados)",
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                font=dict(color="white"), height=240, margin=dict(t=50, b=20),
+                xaxis=dict(type="category"),
+            )
+            st.plotly_chart(fig_vol, use_container_width=True)
+
+        # ── Progresión por ejercicio (peso máximo) ────────────────
+        ejercicios_unicos = sorted(df_gym["ejercicio"].unique())
+        if ejercicios_unicos:
+            ej_sel = st.selectbox("📊 Ver progresión de un ejercicio",
+                                  ejercicios_unicos, key="gym_ej_sel")
+            df_ej = df_gym[df_gym["ejercicio"] == ej_sel]
+            prog = df_ej.groupby("fecha").agg(
+                peso_max=("peso", "max"), reps_max=("reps", "max"),
+                series=("serie", "count")).reset_index()
+            if len(prog) >= 1:
+                fig_prog = go.Figure()
+                fig_prog.add_trace(go.Scatter(
+                    x=prog["fecha"], y=prog["peso_max"],
+                    mode="lines+markers+text",
+                    text=[f"{p:g} kg" for p in prog["peso_max"]],
+                    textposition="top center",
+                    line=dict(color="#FF9800", width=3),
+                    marker=dict(size=10),
+                ))
+                fig_prog.update_layout(
+                    title=f"Peso máximo — {ej_sel.title()}",
+                    paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                    font=dict(color="white"), height=240, margin=dict(t=50, b=20),
+                    xaxis=dict(type="category"), yaxis=dict(title="kg"),
+                )
+                st.plotly_chart(fig_prog, use_container_width=True)
+
+        # ── Lista de días: clic → desglose completo ───────────────
+        st.markdown("**📋 Entrenamientos por día** — toca un día para ver el desglose")
+        for fch in fechas_gym[:30]:
+            dia_df = df_gym[df_gym["fecha"] == fch].sort_values("created_at")
+            n_ej   = dia_df["ejercicio"].nunique()
+            n_ser  = len(dia_df)
+            vol    = dia_df["volumen"].sum()
+            try:
+                dia_sem = DIAS_ES[datetime.fromisoformat(str(fch)).weekday()]
+            except Exception:
+                dia_sem = ""
+            label = (f"🏋️ Gym — {dia_sem} {fch}  ·  {n_ej} ejercicios  ·  "
+                     f"{n_ser} series  ·  {vol:,.0f} kg")
+            with st.expander(label):
+                for ej in dia_df["ejercicio"].unique():
+                    ej_df = dia_df[dia_df["ejercicio"] == ej].sort_values("serie")
+                    mejor = ej_df["peso"].max()
+                    head = f"**💪 {ej.title()}** — {len(ej_df)} series"
+                    if mejor > 0:
+                        head += f" · mejor: {mejor:g} kg"
+                    st.markdown(head)
+                    series_txt = []
+                    for _, s in ej_df.iterrows():
+                        t = f"S{int(s['serie'])}: {int(s['reps'])} reps"
+                        if s["peso"] > 0:
+                            t += f" × {s['peso']:g} kg"
+                        series_txt.append(t)
+                    st.markdown("&nbsp;&nbsp;" + "  ·  ".join(series_txt))
+                st.caption(f"Volumen del día: **{vol:,.0f} kg** "
+                           f"(reps × peso de todas las series)")
 
     st.divider()
 

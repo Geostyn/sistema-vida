@@ -262,3 +262,17 @@ alter table ikigai_resultado disable row level security;
 select table_name from information_schema.tables
 where table_schema = 'public'
 order by table_name;
+
+-- 16. Gym — series de ejercicios (cada fila = 1 serie)
+create table if not exists gym_ejercicios (
+  id uuid default gen_random_uuid() primary key,
+  fecha date not null default current_date,
+  ejercicio text not null,
+  serie int not null default 1,
+  reps int,
+  peso numeric,
+  notas text default '',
+  created_at timestamptz default now()
+);
+create index if not exists idx_gym_fecha_ejercicio on gym_ejercicios (fecha, ejercicio);
+alter table gym_ejercicios enable row level security;

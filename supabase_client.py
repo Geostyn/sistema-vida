@@ -83,6 +83,48 @@ def insert_deporte(actividad, duracion, distancia, sensacion, notas) -> bool:
         return False
 
 
+def _peso_num(v):
+    try:
+        s = str(v).lower().replace("kg", "").replace(",", ".").strip()
+        return float(s) if s else None
+    except (ValueError, TypeError):
+        return None
+
+
+def insert_gym_set(ejercicio, reps, peso, notas="") -> int:
+    """Inserta UNA serie de un ejercicio de gym. Si el mismo ejercicio ya tiene
+    series registradas hoy, la añade como la siguiente serie.
+    Devuelve el número de serie asignado (0 si falló)."""
+    try:
+        ej = str(ejercicio).strip().lower()
+        r = get_client().table("gym_ejercicios").select("serie") \
+            .eq("fecha", _today()).eq("ejercicio", ej).execute()
+        serie = (max((row.get("serie") or 0) for row in r.data) + 1) if r.data else 1
+        try:
+            reps_n = int(float(str(reps).replace("reps", "").strip())) if reps else None
+        except (ValueError, TypeError):
+            reps_n = None
+        get_client().table("gym_ejercicios").insert({
+            "fecha": _today(), "ejercicio": ej, "serie": serie,
+            "reps": reps_n, "peso": _peso_num(peso), "notas": notas or "",
+        }).execute()
+        return serie
+    except Exception as e:
+        logger.error(f"Supabase insert_gym_set: {e}")
+        return 0
+
+
+def deporte_hoy_tiene(actividad_substr: str) -> bool:
+    """True si hoy ya hay una entrada en deporte cuya actividad contiene el texto dado."""
+    try:
+        r = get_client().table("deporte").select("actividad").eq("fecha", _today()).execute()
+        return any(actividad_substr.lower() in str(row.get("actividad", "")).lower()
+                   for row in (r.data or []))
+    except Exception as e:
+        logger.error(f"Supabase deporte_hoy_tiene: {e}")
+        return False
+
+
 def insert_alimentacion(desayuno, comida, cena, snacks, kcal, prot, carbs, grasas, agua, energia) -> bool:
     try:
         get_client().table("alimentacion").insert({

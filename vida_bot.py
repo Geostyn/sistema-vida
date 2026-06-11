@@ -415,7 +415,7 @@ BASE_SYSTEM_PROMPT = """Eres el equipo de expertos personales del usuario. Tu ro
 
 EQUIPO DE EXPERTOS (solo responden si el mensaje toca su área):
 - 🥗 Marcos — Nutricionista Deportivo: Si el usuario menciona comida o bebida, estima los macros de ESA comida concreta (kcal, proteína, carbos, grasas) con los valores más representativos. Si no hay cantidades exactas, estima porciones normales. Rellena "kcal", "prot", "carbs", "grasas" en el JSON con números. Usa el perfil y el acumulado del día para dar consejos específicos. NUNCA sugiere cantidades irreales (no más de 300g cocido de arroz, no más de 250g de pollo en una sugerencia). Si le falta mucho al target, indica distribuir en varias comidas.
-- 💪 Elena — Entrenadora Personal: Solo si el usuario menciona entrenamiento, ejercicio o actividad física. Usa sus días de entreno y objetivo para sugerir progresiones o recuperación.
+- 💪 Hugo — Entrenador Personal: Solo si el usuario menciona entrenamiento, ejercicio o actividad física. Usa sus días de entreno y objetivo para sugerir progresiones o recuperación. Si el usuario dicta un ejercicio de gym con reps/peso, confirma la serie y sugiere el peso o reps para la siguiente serie (progresión).
 - 🙏 Padre Alberto — Guía Espiritual: Solo si el usuario menciona a Dios, fe, oración, gratitud espiritual o prácticas religiosas.
 - 💰 Ricardo — Asesor Financiero: Solo si el usuario menciona gastos, compras, pagos o ingresos.
 - 🚀 Sara — Business Consultant: Solo si el usuario menciona ideas de negocio o proyectos.
@@ -425,6 +425,7 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
 {
   "updates": {
     "deporte": {"actividad": "", "duracion": "", "distancia": "", "sensacion": "😊", "notas": ""},
+    "gym": [{"ejercicio": "", "reps": 0, "peso": 0}],
     "alimentacion": {"desayuno": "", "comida": "", "cena": "", "snacks": "", "kcal": "", "prot": "", "carbs": "", "grasas": "", "agua": "", "energia": "😊"},
     "lexico": [{"palabra": "", "definicion": "", "ejemplo": ""}],
     "refranes": [{"refran": "", "significado": "", "contexto": ""}],
@@ -447,6 +448,13 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
 
 REGLAS IMPORTANTES:
 - Solo incluye campos con datos reales (deja "" los que no apliquen, false los booleans sin datos)
+- "gym": SOLO cuando el usuario dicta un EJERCICIO CONCRETO de gimnasio (ej: "curl de bíceps 12 reps con 10kg", "press banca 8 reps 40 kilos", "sentadilla 10 repeticiones"). Un item por cada ejercicio mencionado.
+  · "ejercicio": nombre estándar en minúsculas y singular (ej: "curl de bíceps", "press de banca", "sentadilla", "peso muerto", "remo con barra", "press militar", "dominadas", "fondos")
+  · "reps": número entero de repeticiones (0 si no lo dice)
+  · "peso": número en kg (0 si es peso corporal o no lo dice)
+  · NO rellenes "deporte" cuando uses "gym" — el sistema registra el día de gym automáticamente
+  · El sistema cuenta las series solo: si el usuario repite el mismo ejercicio el mismo día, se guarda como la siguiente serie
+- "deporte": para actividades generales (correr, bici, fútbol, caminar...) o cuando dice "fui al gym" SIN dictar ejercicios concretos
 - En "responses": deja "" en los expertos que no tienen contenido relevante en el mensaje
 - Cada experto habla en primera persona, conoce al usuario por su perfil, menciona datos reales cuando aplica
 - Categorías de GASTO válidas: Comida, Gasolina, Transporte, Ocio, Ropa, Salud, Formación, Ahorro, Hogar, Servicios, Suscripciones, Extra
@@ -559,6 +567,44 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
             xp_state = result["state"]
             increment_counter("entrenamientos", xp_state)
             xp_state = load_state()
+
+    # ── Ejercicios de gym: cada mención = 1 serie (auto-incremento) ──
+    gym_sets = updates.get("gym", []) or []
+    if isinstance(gym_sets, dict):
+        gym_sets = [gym_sets]
+    gym_guardado = False
+    for g in gym_sets:
+        if not isinstance(g, dict):
+            continue
+        ejercicio = str(g.get("ejercicio", "")).strip()
+        if not ejercicio:
+            continue
+        serie = sb.insert_gym_set(ejercicio, g.get("reps"), g.get("peso")) if IS_CLOUD else 0
+        if serie:
+            gym_guardado = True
+            detalle = f"Serie {serie}"
+            try:
+                reps = int(float(g.get("reps") or 0))
+                if reps > 0:
+                    detalle += f" · {reps} reps"
+            except (ValueError, TypeError):
+                pass
+            try:
+                peso = float(str(g.get("peso") or 0).lower().replace("kg", "").replace(",", ".").strip() or 0)
+                if peso > 0:
+                    detalle += f" × {peso:g} kg"
+            except (ValueError, TypeError):
+                pass
+            files_updated.append(f"🏋️ {ejercicio.title()} ({detalle})")
+
+    # El primer ejercicio del día crea la entrada "Gym" en deporte (1 vez/día)
+    if gym_guardado and IS_CLOUD and not sb.deporte_hoy_tiene("gym"):
+        sb.insert_deporte("Gym", "", "", "💪", "Día de gym (auto-registrado al dictar ejercicios)")
+        result = award_xp("deporte_registrado", xp_state)
+        xp_messages.extend(result["messages"])
+        xp_state = result["state"]
+        increment_counter("entrenamientos", xp_state)
+        xp_state = load_state()
 
     alim = updates.get("alimentacion", {})
     alim_guardada = False
@@ -790,6 +836,7 @@ def process_message(text: str):
             "/datos [categoria] — Ej: /datos negocios\n"
             "/ikigai — Descubrir tu propósito de vida\n\n"
             "<b>Atajos:</b>\n"
+            "<code>curl de bíceps 12 reps con 10kg</code> — Registra serie de gym (repítelo y cuenta Serie 2, 3...)\n"
             "<code>creatina ✅</code> — Registrar creatina del día\n"
             "<code>quiero intentarlo</code> — Añadir mejora recomendada a tus hábitos\n"
             "<code>? tu pregunta</code> — Modo chat libre (sin guardar datos)"
@@ -959,7 +1006,7 @@ def process_message(text: str):
 
     _EXPERT_LABELS = {
         "nutricionista": "🥗 Marcos · Nutricionista Deportivo",
-        "entrenador":    "💪 Elena · Entrenadora Personal",
+        "entrenador":    "💪 Hugo · Entrenador Personal",
         "espiritual":    "🙏 Padre Alberto · Guía Espiritual",
         "asesor":        "💰 Ricardo · Asesor Financiero",
         "consultor":     "🚀 Sara · Business Consultant",
