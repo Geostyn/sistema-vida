@@ -276,3 +276,38 @@ create table if not exists gym_ejercicios (
 );
 create index if not exists idx_gym_fecha_ejercicio on gym_ejercicios (fecha, ejercicio);
 alter table gym_ejercicios enable row level security;
+
+
+-- ════════════════════════════════════════════════════════════════
+-- MIGRACIÓN 2026-06: entrenador IA con memoria + rutina + grupos
+-- Idempotente: se puede ejecutar varias veces sin error.
+-- ════════════════════════════════════════════════════════════════
+
+-- 17. Clasificación por grupo muscular en cada serie de gym
+alter table gym_ejercicios add column if not exists grupo_muscular text default '';
+-- Convención del proyecto (#14): RLS desactivado para acceso con cualquier key
+alter table gym_ejercicios disable row level security;
+
+-- 18. Rutina semanal de gym (split editable desde la web)
+--     dia_semana: 0=Lunes .. 6=Domingo
+--     ejercicios: [{"ejercicio":"press militar","series_objetivo":4,"reps_objetivo":10,"peso_sugerido":40}]
+create table if not exists rutina_gym (
+  id              bigserial primary key,
+  dia_semana      int not null,
+  grupo_muscular  text default '',
+  ejercicios      jsonb default '[]'::jsonb,
+  updated_at      timestamptz default now()
+);
+create unique index if not exists idx_rutina_dia on rutina_gym (dia_semana);
+alter table rutina_gym disable row level security;
+
+-- 19. Memoria conversacional del bot (últimas interacciones por chat)
+create table if not exists conversaciones (
+  id          bigserial primary key,
+  chat_id     text not null,
+  rol         text not null,            -- 'user' | 'assistant'
+  contenido   text not null,
+  created_at  timestamptz default now()
+);
+create index if not exists idx_conv_chat_fecha on conversaciones (chat_id, created_at desc);
+alter table conversaciones disable row level security;

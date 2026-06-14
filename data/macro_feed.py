@@ -1,11 +1,15 @@
 """
-Macro Feed — Datos macroeconómicos via yfinance (gratis).
+Macro Feed — Datos macroeconómicos.
+
+DXY: TIEMPO REAL desde MT5 (fórmula ICE con los 6 pares) via CorrelationEngine.
+     yfinance ^DXY queda solo como fallback (retraso ~15 min + rate limit).
+Resto (VIX, yields, SPX): yfinance — no existen en el broker MT5.
+
 Correlaciones clave para XAUUSD:
-  ^DXY   → DXY sube = oro baja (correlacion -0.85 promedio)
+  DXY    → DXY sube = oro baja (correlacion -0.85 promedio)
   ^TNX   → Rendimiento bono 10Y: sube = oro baja (coste de oportunidad)
   ^VIX   → Volatilidad/miedo: sube = oro sube (activo refugio)
   ^GSPC  → S&P 500: cae en crisis = oro sube
-  EURUSD → Correlacion positiva con oro (ambos vs USD)
 """
 
 import os
@@ -47,9 +51,24 @@ CACHE_MINUTES = 30  # Refrescar cada 30 min — Yahoo Finance tiene rate limit e
 
 
 class MacroFeed:
-    def __init__(self):
+    def __init__(self, correlation_engine=None):
+        # CorrelationEngine: fuente PRIMARIA del DXY (MT5 tiempo real).
+        # Si es None o falla → fallback a yfinance ^DXY.
+        self.corr = correlation_engine
         self._cache: dict = {}
         self._cache_time: datetime | None = None
+
+    def _get_dxy_series_mt5(self, n_bars: int = 120):
+        """Serie H1 del DXY real calculada desde MT5. None si no disponible."""
+        if self.corr is None:
+            return None
+        try:
+            dxy = self.corr.get_dxy_synthetic(n_bars=n_bars, timeframe="H1")
+            if dxy is not None and len(dxy) >= 20:
+                return dxy
+        except Exception as e:
+            logger.debug(f"DXY MT5 no disponible: {e}")
+        return None
 
     def _cache_valid(self) -> bool:
         if self._cache_time is None:
@@ -98,9 +117,18 @@ class MacroFeed:
         details = {}
 
         # ── 1. DXY — correlacion inversa con oro ────────────────
-        dxy_trend = "NEUTRAL"
-        if "dxy" in data and len(data["dxy"]) >= 20:
-            dxy  = data["dxy"]["close"]
+        # Fuente primaria: MT5 tiempo real (formula ICE 6 pares).
+        # Fallback: yfinance ^DXY (retrasado ~15 min).
+        dxy_trend  = "NEUTRAL"
+        dxy_source = None
+        dxy = self._get_dxy_series_mt5(n_bars=120)
+        if dxy is not None:
+            dxy_source = "MT5 tiempo real"
+        elif "dxy" in data and len(data["dxy"]) >= 20:
+            dxy = data["dxy"]["close"]
+            dxy_source = "yfinance (fallback)"
+
+        if dxy is not None:
             ema5  = dxy.ewm(span=5,  adjust=False).mean().iloc[-1]
             ema20 = dxy.ewm(span=20, adjust=False).mean().iloc[-1]
             dxy_last = float(dxy.iloc[-1])
@@ -114,7 +142,8 @@ class MacroFeed:
                 dxy_trend = "BULLISH"   # DXY sube → oro bajista
                 score -= 1
             votes += 1
-            details["dxy"] = {"valor": round(dxy_last, 2), "cambio_6h": round(dxy_chg, 3), "ema_trend": dxy_trend}
+            details["dxy"] = {"valor": round(dxy_last, 2), "cambio_6h": round(dxy_chg, 3),
+                              "ema_trend": dxy_trend, "fuente": dxy_source}
 
         # ── 2. Rendimiento bonos 10Y — correlacion inversa ────────
         yields_trend = "NEUTRAL"
@@ -189,19 +218,60 @@ class MacroFeed:
         }
 
     def get_dxy_value(self) -> float | None:
-        """Devuelve el último valor del DXY."""
+        """
+        Último valor del DXY — spot en vivo desde ticks MT5 (al segundo).
+        Fallback: yfinance ^DXY.
+        """
+        if self.corr is not None:
+            try:
+                value = self.corr.get_dxy_realtime()
+                if value:
+                    return value
+            except Exception as e:
+                logger.debug(f"DXY realtime no disponible: {e}")
         data = self.fetch_all()
         if "dxy" in data and not data["dxy"].empty:
             return float(data["dxy"]["close"].iloc[-1])
         return None
 
+    def get_dxy_external(self) -> float | None:
+        """
+        DXY de fuente EXTERNA (yfinance ^DXY) — solo para verificación
+        cruzada del sintético MT5 (config["dxy"]["external_check"]).
+        Equivale a mirar TradingView/FastBull: mismo índice ICE, con
+        ~15 min de retraso. NUNCA usar para operar — solo para detectar
+        si el sintético se desvía (pares MT5 con feed degradado).
+        """
+        data = self.fetch_all()
+        if "dxy" in data and not data["dxy"].empty:
+            try:
+                return float(data["dxy"]["close"].iloc[-1])
+            except Exception:
+                return None
+        return None
+
     def get_dxy_chart_data(self, interval: str = "5m", period: str = "1d") -> pd.DataFrame:
         """
-        Retorna velas del DXY para el dashboard (por defecto M5, últimas 24h).
-        yfinance soporta interval='5m','15m','1h' para period corto.
-        Se usa ^DXY (US Dollar Index — ICE).
-        Retorna DataFrame con columnas: time, open, high, low, close, volume
+        Velas del DXY para el dashboard (por defecto M5, últimas 24h).
+        Fuente primaria: MT5 tiempo real (CorrelationEngine.get_dxy_ohlc).
+        Fallback: yfinance ^DXY.
+        Retorna DataFrame con columnas: time, open, high, low, close, ema20
         """
+        # ── Primario: MT5 en tiempo real ──────────────────────────
+        if self.corr is not None:
+            try:
+                tf_map = {"5m": "M5", "15m": "M15", "1h": "H1"}
+                n_map  = {"5m": 288, "15m": 96, "1h": 120}  # ≈24h en M5/M15, 5d en H1
+                df = self.corr.get_dxy_ohlc(
+                    timeframe=tf_map.get(interval, "M5"),
+                    n_bars=n_map.get(interval, 288),
+                )
+                if not df.empty:
+                    return df
+            except Exception as e:
+                logger.debug(f"DXY OHLC MT5 no disponible: {e}")
+
+        # ── Fallback: yfinance ^DXY ───────────────────────────────
         try:
             df = yf.Ticker("^DXY", session=_YF_SESSION).history(
                 period=period, interval=interval, auto_adjust=True
@@ -227,8 +297,11 @@ class MacroFeed:
         data = self.fetch_all()
         summary = {}
 
-        if "dxy" in data and not data["dxy"].empty:
+        # DXY: primario MT5 tiempo real, fallback yfinance
+        dxy = self._get_dxy_series_mt5(n_bars=24)
+        if dxy is None and "dxy" in data and not data["dxy"].empty:
             dxy = data["dxy"]["close"]
+        if dxy is not None and len(dxy) >= 7:
             summary["dxy"] = {
                 "value":   round(float(dxy.iloc[-1]), 3),
                 "change":  round(float(dxy.iloc[-1] - dxy.iloc[-6]), 3),

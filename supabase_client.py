@@ -91,12 +91,49 @@ def _peso_num(v):
         return None
 
 
-def insert_gym_set(ejercicio, reps, peso, notas="") -> int:
+# ── Clasificación por grupo muscular ─────────────────────────
+# Palabra clave (en el nombre del ejercicio) → grupo muscular.
+# El orden importa: se evalúa por coincidencia de subcadena.
+_MUSCULO_KEYWORDS = [
+    ("hombro",  ["press militar", "press hombro", "elevacion lateral", "elevación lateral",
+                 "elevacion frontal", "elevación frontal", "pajaro", "pájaro", "face pull",
+                 "press arnold", "hombro", "deltoid"]),
+    ("espalda", ["dominada", "dominadas", "jalon", "jalón", "remo", "peso muerto",
+                 "pull over", "pullover", "espalda", "dorsal", "trapecio", "encogimiento"]),
+    ("pecho",   ["press banca", "press de banca", "press inclinado", "press plano",
+                 "aperturas", "aperture", "pec deck", "contractor", "fondos pecho",
+                 "press pecho", "pecho", "pectoral"]),
+    ("biceps",  ["curl de biceps", "curl de bíceps", "curl biceps", "curl bíceps",
+                 "curl martillo", "curl predicador", "curl concentrado", "curl", "biceps", "bíceps"]),
+    ("triceps", ["fondos", "extension triceps", "extensión tríceps", "press frances",
+                 "press francés", "patada triceps", "jalon triceps", "triceps", "tríceps"]),
+    ("pierna",  ["sentadilla", "squat", "prensa", "zancada", "zancadas", "lunge",
+                 "extension cuadriceps", "extensión cuádriceps", "curl femoral",
+                 "gemelo", "gemelos", "peso muerto rumano", "hip thrust", "pierna",
+                 "cuadriceps", "cuádriceps", "femoral", "gluteo", "glúteo"]),
+    ("abdomen", ["abdominal", "abdominales", "plancha", "crunch", "elevacion piernas",
+                 "elevación piernas", "rueda abdominal", "abdomen", "core"]),
+]
+
+
+def clasificar_grupo_muscular(ejercicio: str) -> str:
+    """Devuelve el grupo muscular de un ejercicio según palabras clave. 'otros' si no encaja."""
+    ej = str(ejercicio).strip().lower()
+    if not ej:
+        return "otros"
+    for grupo, claves in _MUSCULO_KEYWORDS:
+        if any(k in ej for k in claves):
+            return grupo
+    return "otros"
+
+
+def insert_gym_set(ejercicio, reps, peso, notas="", grupo_muscular="") -> int:
     """Inserta UNA serie de un ejercicio de gym. Si el mismo ejercicio ya tiene
     series registradas hoy, la añade como la siguiente serie.
     Devuelve el número de serie asignado (0 si falló)."""
     try:
         ej = str(ejercicio).strip().lower()
+        grupo = (grupo_muscular or "").strip().lower() or clasificar_grupo_muscular(ej)
         r = get_client().table("gym_ejercicios").select("serie") \
             .eq("fecha", _today()).eq("ejercicio", ej).execute()
         serie = (max((row.get("serie") or 0) for row in r.data) + 1) if r.data else 1
@@ -107,11 +144,61 @@ def insert_gym_set(ejercicio, reps, peso, notas="") -> int:
         get_client().table("gym_ejercicios").insert({
             "fecha": _today(), "ejercicio": ej, "serie": serie,
             "reps": reps_n, "peso": _peso_num(peso), "notas": notas or "",
+            "grupo_muscular": grupo,
         }).execute()
         return serie
     except Exception as e:
         logger.error(f"Supabase insert_gym_set: {e}")
         return 0
+
+
+def get_historial_ejercicio(ejercicio: str, limite_dias: int = 5) -> list:
+    """Últimas sesiones (por fecha) de un ejercicio: para cada día, peso máx,
+    reps máx y nº de series. Más reciente primero. Sirve para sobrecarga progresiva."""
+    try:
+        ej = str(ejercicio).strip().lower()
+        r = get_client().table("gym_ejercicios").select("fecha,reps,peso,serie") \
+            .eq("ejercicio", ej).order("fecha", desc=True).limit(300).execute()
+        por_dia = {}
+        for row in (r.data or []):
+            f = row.get("fecha")
+            if not f:
+                continue
+            d = por_dia.setdefault(f, {"fecha": f, "peso_max": 0.0, "reps_max": 0, "series": 0})
+            d["series"] += 1
+            d["peso_max"] = max(d["peso_max"], float(row.get("peso") or 0))
+            d["reps_max"] = max(d["reps_max"], int(row.get("reps") or 0))
+        dias = sorted(por_dia.values(), key=lambda x: x["fecha"], reverse=True)
+        return dias[:limite_dias]
+    except Exception as e:
+        logger.error(f"Supabase get_historial_ejercicio: {e}")
+        return []
+
+
+def get_ultima_sesion_resumen() -> list:
+    """Resumen de la ÚLTIMA fecha con gym (distinta de hoy): lista de
+    {ejercicio, peso_max, reps_max, series} para arrancar la sesión con objetivos."""
+    try:
+        r = get_client().table("gym_ejercicios").select("fecha,ejercicio,reps,peso") \
+            .neq("fecha", _today()).order("fecha", desc=True).limit(200).execute()
+        data = r.data or []
+        if not data:
+            return []
+        ultima_fecha = data[0]["fecha"]
+        por_ej = {}
+        for row in data:
+            if row.get("fecha") != ultima_fecha:
+                continue
+            ej = row.get("ejercicio", "")
+            d = por_ej.setdefault(ej, {"ejercicio": ej, "fecha": ultima_fecha,
+                                       "peso_max": 0.0, "reps_max": 0, "series": 0})
+            d["series"] += 1
+            d["peso_max"] = max(d["peso_max"], float(row.get("peso") or 0))
+            d["reps_max"] = max(d["reps_max"], int(row.get("reps") or 0))
+        return list(por_ej.values())
+    except Exception as e:
+        logger.error(f"Supabase get_ultima_sesion_resumen: {e}")
+        return []
 
 
 def deporte_hoy_tiene(actividad_substr: str) -> bool:
@@ -454,20 +541,23 @@ def get_recomendacion_semana() -> dict:
 
 def save_ikigai_resultado(analysis: dict, respuestas_raw: dict = None) -> bool:
     try:
-        import json as _json
+        # Columnas jsonb: pasar listas/dicts NATIVOS (supabase-py los serializa a
+        # jsonb correctamente). Antes se hacía _json.dumps() y se guardaban como
+        # string → el dashboard veía un str en vez de lista y los círculos salían
+        # en blanco. NO volver a envolver con json.dumps.
         payload = {
-            "lo_que_amas":     _json.dumps(analysis.get("lo_que_amas", []),     ensure_ascii=False),
-            "lo_que_bien":     _json.dumps(analysis.get("lo_que_se_te_da_bien", []), ensure_ascii=False),
-            "mundo_necesita":  _json.dumps(analysis.get("lo_que_necesita_el_mundo", []), ensure_ascii=False),
-            "te_pueden_pagar": _json.dumps(analysis.get("por_lo_que_te_pueden_pagar", []), ensure_ascii=False),
+            "lo_que_amas":     analysis.get("lo_que_amas", []),
+            "lo_que_bien":     analysis.get("lo_que_se_te_da_bien", []),
+            "mundo_necesita":  analysis.get("lo_que_necesita_el_mundo", []),
+            "te_pueden_pagar": analysis.get("por_lo_que_te_pueden_pagar", []),
             "ikigai_central":  analysis.get("ikigai_central", ""),
             "mision":          analysis.get("mision", ""),
             "vocacion":        analysis.get("vocacion", ""),
             "profesion":       analysis.get("profesion", ""),
             "pasion":          analysis.get("pasion", ""),
-            "pasos_accion":    _json.dumps(analysis.get("pasos_accion", []),     ensure_ascii=False),
+            "pasos_accion":    analysis.get("pasos_accion", []),
             "reflexion_final": analysis.get("reflexion_final", ""),
-            "respuestas_raw":  _json.dumps(respuestas_raw or {},                  ensure_ascii=False),
+            "respuestas_raw":  respuestas_raw or {},
         }
         get_client().table("ikigai_resultado").insert(payload).execute()
         return True
@@ -536,3 +626,66 @@ def get_vida_state_summary() -> str:
     except Exception as e:
         logger.error(f"Supabase get_vida_state_summary: {e}")
         return "Estado no disponible temporalmente."
+
+
+# ── Rutina semanal de gym ────────────────────────────────────
+
+def get_rutina_dia(dia_semana: int) -> dict:
+    """Rutina de un día (0=Lunes .. 6=Domingo). {} si no hay nada definido."""
+    try:
+        r = get_client().table("rutina_gym").select("*").eq("dia_semana", dia_semana).limit(1).execute()
+        return r.data[0] if r.data else {}
+    except Exception as e:
+        logger.error(f"Supabase get_rutina_dia: {e}")
+        return {}
+
+
+def get_rutina_completa() -> list:
+    """Toda la rutina semanal, ordenada por día."""
+    try:
+        r = get_client().table("rutina_gym").select("*").order("dia_semana").execute()
+        return r.data or []
+    except Exception as e:
+        logger.error(f"Supabase get_rutina_completa: {e}")
+        return []
+
+
+# ── Memoria conversacional ───────────────────────────────────
+
+def guardar_mensaje(chat_id: str, rol: str, contenido: str) -> bool:
+    """Guarda un turno de conversación (rol: 'user' | 'assistant')."""
+    try:
+        if not contenido or not contenido.strip():
+            return False
+        get_client().table("conversaciones").insert({
+            "chat_id": str(chat_id), "rol": rol, "contenido": contenido[:4000],
+        }).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase guardar_mensaje: {e}")
+        return False
+
+
+def get_historial_chat(chat_id: str, n: int = 10) -> list:
+    """Últimos n turnos de un chat en orden cronológico (antiguo → reciente),
+    como [{'role': 'user'|'assistant', 'content': str}] listo para Groq."""
+    try:
+        r = get_client().table("conversaciones").select("rol,contenido") \
+            .eq("chat_id", str(chat_id)).order("created_at", desc=True).limit(n).execute()
+        filas = list(reversed(r.data or []))
+        return [{"role": f.get("rol", "user"), "content": f.get("contenido", "")} for f in filas]
+    except Exception as e:
+        logger.error(f"Supabase get_historial_chat: {e}")
+        return []
+
+
+def limpiar_historial_chat(chat_id: str, conservar: int = 40) -> None:
+    """Borra mensajes antiguos del chat, conservando los `conservar` más recientes."""
+    try:
+        r = get_client().table("conversaciones").select("id") \
+            .eq("chat_id", str(chat_id)).order("created_at", desc=True).limit(500).execute()
+        ids = [row["id"] for row in (r.data or [])][conservar:]
+        if ids:
+            get_client().table("conversaciones").delete().in_("id", ids).execute()
+    except Exception as e:
+        logger.error(f"Supabase limpiar_historial_chat: {e}")

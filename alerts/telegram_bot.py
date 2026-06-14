@@ -42,6 +42,13 @@ class TelegramBot:
         if not self.enabled:
             return False
 
+        # Telegram limita a 4096 chars — recortar por el medio (detalle de
+        # confluencias/razonamiento), nunca los niveles ni el bloque 2K
+        if len(text) > 4000:
+            head = text[:2400]
+            tail = text[-1400:]
+            text = head + "\n  … <i>(detalle recortado)</i> …\n" + tail
+
         url  = TELEGRAM_API.format(token=self.bot_token, method="sendMessage")
         data = {"chat_id": self.chat_id, "text": text, "parse_mode": parse_mode}
 
@@ -72,9 +79,20 @@ class TelegramBot:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {now}\n"
             f"💰 Balance: {balance:,.0f} {currency}\n\n"
-            f"Monitoreando:\n"
-            f"  📊 XAUUSD · EURUSD · GBPUSD · USDJPY\n\n"
-            f"Te avisaré cuando detecte un setup de alta probabilidad."
+            f"Monitoreando XAUUSD — 3 streams de señales:\n"
+            f"  ⚡ DAYTRADE M15 (intradía, manual — ilimitadas)\n"
+            f"  📊 INTRADAY H1 (auto-ejecutada en demo)\n"
+            f"  📅 SWING D1→H4 (1-3/semana, manual)\n\n"
+            f"Cada señal lleva bloques 💼 MI CUENTA y 🏦 FUNDEDNEXT 2K\n"
+            f"con lotes y riesgo calculados para cada cuenta.\n\n"
+            f"<b>Comandos:</b>\n"
+            f"  /estado — por qué no hay señal ahora\n"
+            f"  /status — métricas del sistema\n"
+            f"  /micuenta — estado cuenta personal\n"
+            f"  /saldo 250.00 — sincronizar saldo personal\n"
+            f"  /funded — estado cuenta 2K\n"
+            f"  /equity 1985.50 — sincronizar equity 2K\n"
+            f"  /revisar — órdenes pendientes"
         )
         return self.send_message(msg)
 
@@ -213,8 +231,38 @@ class TelegramBot:
             elif cmd == "/status":
                 commands.append({"type": "status"})
 
+            elif cmd == "/estado":
+                # Diagnóstico: por qué no hay señal ahora + estado 2K
+                commands.append({"type": "estado"})
+
             elif cmd == "/revisar":
                 commands.append({"type": "revisar"})
+
+            elif cmd == "/funded":
+                commands.append({"type": "funded"})
+
+            elif cmd == "/micuenta":
+                commands.append({"type": "micuenta"})
+
+            elif cmd == "/saldo" and len(parts) >= 2:
+                # /saldo 250.00 — sincronizar saldo real de la cuenta personal
+                try:
+                    commands.append({
+                        "type":   "saldo",
+                        "amount": float(parts[1].replace(",", ".")),
+                    })
+                except ValueError:
+                    pass
+
+            elif cmd == "/equity" and len(parts) >= 2:
+                # /equity 1985.50 — sincronizar equity real de FundedNext
+                try:
+                    commands.append({
+                        "type":   "equity",
+                        "amount": float(parts[1].replace(",", ".")),
+                    })
+                except ValueError:
+                    pass
 
         return commands
 
@@ -277,6 +325,71 @@ class TelegramBot:
         )
         return self.send_message(msg)
 
+    def send_funded_status(self, state: dict) -> bool:
+        """Responde /funded (y confirma /equity) con el estado de la cuenta 2K."""
+        if not state or not state.get("enabled"):
+            return self.send_message("🏦 Cuenta FundedNext desactivada en config.yaml")
+        breach = "\n🚨 <b>CUENTA EN BREACH — NO OPERAR</b>" if state.get("breached") else ""
+        msg = (
+            f"🏦 <b>FUNDEDNEXT 2K — Estado</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Equity: <b>${state['equity']:,.2f}</b>\n"
+            f"📈 Máximo: ${state['highest']:,.2f}\n"
+            f"🛑 Floor (trailing 6%): <b>${state['floor']:,.2f}</b>\n"
+            f"🟢 Room disponible: <b>${state['room']:,.2f}</b>\n"
+            f"📉 DD usado: {state['dd_used_pct']:.1f}%{breach}\n\n"
+            f"Sincronizar con la cuenta real:\n"
+            f"<code>/equity {state['equity']:.2f}</code>"
+        )
+        return self.send_message(msg)
+
+    def send_funded_result(self, result: dict, state: dict) -> bool:
+        """Notifica el P&L simulado 2K de una señal resuelta en la demo."""
+        pnl   = result.get("funded_pnl", 0)
+        emoji = "✅" if pnl >= 0 else "❌"
+        msg = (
+            f"🏦 <b>FundedNext 2K — resultado señal #{result['signal_id']}</b>\n"
+            f"{emoji} {result['outcome']}: <b>{pnl:+.2f} USD</b> "
+            f"(R {result.get('r_realized', 0):+.2f})\n"
+            f"💰 Equity simulado: <b>${result['equity']:,.2f}</b> | "
+            f"Floor ${state.get('floor', 0):,.2f} | Room ${state.get('room', 0):,.2f}\n"
+            f"<i>Si lo ejecutaste distinto, sincroniza: /equity importe</i>"
+        )
+        return self.send_message(msg)
+
+    def send_personal_status(self, state: dict) -> bool:
+        """Responde /micuenta (y confirma /saldo) con el estado de la cuenta personal."""
+        if not state or not state.get("enabled"):
+            return self.send_message("💼 Cuenta personal desactivada en config.yaml")
+        cur   = state.get("currency", "EUR")
+        title = state.get("title", "MI CUENTA")
+        low   = "\n⚠️ <b>EQUITY BAJO MÍNIMO — señales NO aptas</b>" if state.get("too_low") else ""
+        msg = (
+            f"💼 <b>{title} — Estado</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Equity: <b>{state['equity']:,.2f} {cur}</b>\n"
+            f"📊 P&L acumulado: <b>{state['pnl']:+,.2f} {cur}</b>\n"
+            f"🏁 Balance inicial: {state['initial']:,.2f} {cur}{low}\n\n"
+            f"Sincronizar con tu cuenta real:\n"
+            f"<code>/saldo {state['equity']:.2f}</code>"
+        )
+        return self.send_message(msg)
+
+    def send_personal_result(self, result: dict, state: dict) -> bool:
+        """Notifica el P&L simulado de MI CUENTA al resolverse una señal apta."""
+        pnl   = result.get("personal_pnl", 0)
+        cur   = state.get("currency", "EUR")
+        title = state.get("title", "MI CUENTA")
+        emoji = "✅" if pnl >= 0 else "❌"
+        msg = (
+            f"💼 <b>{title} — resultado señal #{result['signal_id']}</b>\n"
+            f"{emoji} {result['outcome']}: <b>{pnl:+.2f} {cur}</b> "
+            f"(R {result.get('r_realized', 0):+.2f})\n"
+            f"💰 Equity simulado: <b>{result['equity']:,.2f} {cur}</b>\n"
+            f"<i>Si lo ejecutaste distinto, sincroniza: /saldo importe</i>"
+        )
+        return self.send_message(msg)
+
     def send_breakeven_alert(self, symbol: str, direction: str,
                               entry: float, current: float) -> bool:
         """Alerta para mover SL a breakeven cuando el trade llega a +1R."""
@@ -328,30 +441,135 @@ class TelegramBot:
         tp1_dist = abs(tp1 - entry)
         tp1_rr   = tp1_dist / sl_dist if sl_dist else 0
 
+        # Header diferenciado: SWING vs DAYTRADE vs INTRADAY vs REVERSIÓN
+        mode = signal.get("mode", "")
+        if mode == "SWING":
+            hold_est  = signal.get("hold_estimate", "2-7 días")
+            model_hdr = f"📅 <b>SWING TRADE</b>  —  hold estimado: <b>{hold_est}</b>\n"
+            tf_header = "D1→H4"
+            hdr_tag   = "SWING "
+        elif mode == "DAYTRADE":
+            model_hdr = "⚡ <b>DAYTRADE M15</b>  —  intradía, ejecución manual\n"
+            tf_header = "H1→M15"
+            hdr_tag   = "DAYTRADE "
+        elif signal.get("model") == "SWEEP_REVERSAL":
+            model_hdr = "⚡ <b>MODELO: REVERSIÓN POR BARRIDO</b>\n"
+            tf_header = "H1"
+            hdr_tag   = ""
+        else:
+            model_hdr = ""
+            tf_header = "H1"
+            hdr_tag   = ""
+
         lines = [
-            f"📊 <b>SETUP {symbol} | H1 | {time_str}</b>",
+            f"📊 <b>{hdr_tag}SETUP {symbol} | {tf_header} | {time_str}</b>",
             f"━━━━━━━━━━━━━━━━━━━━━━",
-            f"{dir_emoji} <b>{dir_es}</b>",
+            f"{model_hdr}{dir_emoji} <b>{dir_es}</b>",
+        ]
+
+        # ── Bloque MI CUENTA PRIMERO (tu cuenta real — ejecución manual) ──
+        # Va arriba para que el recorte de 4096 chars nunca lo toque.
+        personal = signal.get("personal") or {}
+        if personal:
+            p_title = personal.get("title", "MI CUENTA")
+            p_cur   = personal.get("currency", "EUR")
+            lines += [f"",
+                      f"💼 <b>{p_title} ({personal.get('equity', 0):,.0f} {p_cur}) "
+                      f"— TU OPERACIÓN</b>",
+                      f"━━━━━━━━━━━━━━━━━━━━━━"]
+            if personal.get("apta"):
+                p_sl_d  = abs(personal["entry"] - personal["sl"])
+                p_tp1_r = abs(tp1 - personal["entry"]) / p_sl_d if p_sl_d else 0
+                src     = "M15" if personal.get("refined") else "H1"
+                lines += [
+                    f"📍 <b>Entry:</b> <code>{personal['entry']:.2f}</code>  "
+                    f"🛑 <b>SL:</b> <code>{personal['sl']:.2f}</code>  ({src})",
+                    f"🎯 <b>TP1:</b> <code>{tp1:.2f}</code>  — R:R 1:{p_tp1_r:.1f}",
+                ]
+                if tp2 is not None:
+                    p_tp2_r = abs(tp2 - personal["entry"]) / p_sl_d if p_sl_d else 0
+                    lines.append(
+                        f"🎯 <b>TP2:</b> <code>{tp2:.2f}</code>  — R:R 1:{p_tp2_r:.1f}")
+                lines += [
+                    f"📦 <b>Lotes: {personal['lots']:.2f}</b>  |  "
+                    f"Riesgo: <b>{personal['risk_acc']:.2f} {p_cur}</b> "
+                    f"({personal['risk_pct']:.1f}% equity)",
+                    f"✅ <b>APTA {p_title}</b>",
+                ]
+            else:
+                reason = "; ".join(personal.get("reasons", [])) or "no evaluable"
+                lines += [
+                    f"⚠️ <b>NO APTA</b> — {reason}",
+                    f"<i>Señal solo informativa para tu cuenta personal</i>",
+                ]
+
+        # ── Bloque FundedNext 2K (ejecución manual) ───────────────
+        funded = signal.get("funded") or {}
+        if funded:
+            f_title = funded.get("title", "FUNDEDNEXT 2K")
+            lines += [f"", f"🏦 <b>{f_title} — TU OPERACIÓN</b>",
+                      f"━━━━━━━━━━━━━━━━━━━━━━"]
+            if funded.get("apta"):
+                src     = "M15" if funded.get("refined") else "H1"
+                f_sl_d  = abs(funded["entry"] - funded["sl"])
+                f_tp1_r = abs(tp1 - funded["entry"]) / f_sl_d if f_sl_d else 0
+                lines += [
+                    f"📍 <b>Entry:</b> <code>{funded['entry']:.2f}</code>  "
+                    f"🛑 <b>SL:</b> <code>{funded['sl']:.2f}</code>  ({src})",
+                    f"🎯 <b>TP1:</b> <code>{tp1:.2f}</code>  — R:R 1:{f_tp1_r:.1f}",
+                ]
+                if tp2 is not None:
+                    f_tp2_r = abs(tp2 - funded["entry"]) / f_sl_d if f_sl_d else 0
+                    lines.append(
+                        f"🎯 <b>TP2:</b> <code>{tp2:.2f}</code>  — R:R 1:{f_tp2_r:.1f}")
+                lines += [
+                    f"📦 <b>Lotes: {funded['lots']:.2f}</b>  |  "
+                    f"Riesgo: <b>${funded['risk_usd']:.2f}</b> ({funded['risk_pct']:.1f}% equity)",
+                    f"✅ <b>APTA 2K</b>  |  Room DD: ${funded['room']:.0f} "
+                    f"(floor ${funded['floor']:,.0f})",
+                ]
+                if funded.get("room_warn"):
+                    lines.append(
+                        f"⚠️ Este trade consume el {funded['room_pct']:.0f}% del room restante"
+                    )
+            else:
+                reason = "; ".join(funded.get("reasons", [])) or "no evaluable"
+                lines += [
+                    f"⚠️ <b>NO APTA 2K</b> — {reason}",
+                    f"<i>Señal solo informativa para la cuenta fondeada</i>",
+                ]
+            if signal.get("news_blackout"):
+                lines.append(
+                    f"📰 FundedNext: dato de alto impacto cerca — abrir/cerrar "
+                    f"±5 min = solo cuenta el 40% del beneficio"
+                )
+
+        # ── Niveles de la demo (referencia del análisis) ──────────
+        demo_tf = "H4" if mode == "SWING" else ("M15" if mode == "DAYTRADE" else "H1")
+        lines += [
             f"",
-            f"📍 <b>Entrada:</b>   <code>{entry:.5f}</code>",
-            f"🛑 <b>Stop Loss:</b> <code>{sl:.5f}</code>  ({sl_dist:.5f})",
-            f"🎯 <b>TP1:</b>       <code>{tp1:.5f}</code>  — R:R 1:{tp1_rr:.1f}",
+            f"📋 <b>Análisis ({'M15 — sin ejecución demo' if mode == 'DAYTRADE' else 'demo ' + demo_tf}):</b>",
+            f"📍 Entrada: <code>{entry:.5f}</code>",
+            f"🛑 Stop Loss: <code>{sl:.5f}</code>  ({sl_dist:.5f})",
+            f"🎯 TP1: <code>{tp1:.5f}</code>  — R:R 1:{tp1_rr:.1f}",
         ]
 
         if tp2 is not None:
             tp2_dist = abs(tp2 - entry)
             tp2_rr   = tp2_dist / sl_dist if sl_dist else 0
-            lines.append(f"🎯 <b>TP2:</b>       <code>{tp2:.5f}</code>  — R:R 1:{tp2_rr:.1f}")
+            lines.append(f"🎯 TP2: <code>{tp2:.5f}</code>  — R:R 1:{tp2_rr:.1f}")
 
         if lot_size is not None:
-            lines.append(f"📦 <b>Lotes sugeridos:</b> {lot_size:.2f}")
+            lines.append(f"📦 Lotes demo: {lot_size:.2f}")
 
         regime_str = f" | {regime}" if regime and regime not in ("UNKNOWN", "") else ""
         ml_str     = f" | ML {ml_proba:.0%}" if ml_proba and ml_proba != 0.5 else ""
+        max_cf     = signal.get("max_confluences", 16.5)
+        bias_lbl   = "Bias H1" if mode == "DAYTRADE" else "Bias H4"
         lines += [
             f"",
-            f"⚡ <b>Confianza:</b> {confidence:.0%}  ({confluences}/14.5{regime_str}{ml_str})",
-            f"📈 <b>Bias H4:</b>   {bias_h4}",
+            f"⚡ <b>Confianza:</b> {confidence:.0%}  ({confluences}/{max_cf}{regime_str}{ml_str})",
+            f"📈 <b>{bias_lbl}:</b>   {bias_h4}",
         ]
 
         if rsi_val is not None:
@@ -362,16 +580,24 @@ class TelegramBot:
             for d in cf_details:
                 lines.append(f"  • {d}")
 
-        # ── Razonamiento (nuevo) ──────────────────────────────────
+        # ── Razonamiento ──────────────────────────────────────────
         if reasoning:
             lines += [f"", f"💡 <b>Por qué esta operación:</b>", reasoning]
 
-        # ── Contexto de noticias (nuevo) ─────────────────────────
+        # ── Contexto de noticias ──────────────────────────────────
         if news_context:
             lines += [f"", news_context]
 
         if news_warn:
             lines += [f"", f"⚠️ <b>Precaución:</b> {news_warn}"]
+
+        dd_warn = signal.get("dd_warning", "")
+        if dd_warn:
+            lines += [f"", dd_warn]
+
+        exec_note = signal.get("exec_block_note", "")
+        if exec_note:
+            lines += [f"", exec_note]
 
         obs_note = signal.get("observation_note", "")
         if obs_note:

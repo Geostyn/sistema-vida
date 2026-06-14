@@ -1,0 +1,14 @@
+[server]
+headless = true
+address = "127.0.0.1"
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
+serverAddress = "127.0.0.1"
+serverPort = 8501
+
+[theme]
+base = "dark"

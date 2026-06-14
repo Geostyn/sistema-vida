@@ -50,10 +50,14 @@ from analysis.indicators import add_indicators, get_ema_bias, get_rsi_state
 from analysis.market_structure import detect_market_structure, find_order_blocks
 from analysis.correlation_engine import CorrelationEngine
 from risk.risk_manager import RiskManager
+from risk.funded_account import FundedAccountTracker
+from risk.personal_account import PersonalAccountTracker
 from alerts.telegram_bot import TelegramBot
+from alerts.news_alerts import NewsAlertManager
 from ml.outcome_tracker import OutcomeTracker
 from ml.learning_engine import LearningEngine
 from trade.executor import TradeExecutor
+from trade.trade_manager import TradeManager
 from analysis.volume_profile import VolumeProfileEngine
 from analysis.delta_engine import DeltaEngine
 from analysis.market_regime import MarketRegimeEngine
@@ -110,13 +114,54 @@ def init_database(db_path: str):
             mt5_ticket         INTEGER DEFAULT NULL
         )
     """)
-    # Migración: añadir columna mt5_ticket si no existe (DB antigua)
-    try:
-        cursor.execute("ALTER TABLE signals ADD COLUMN mt5_ticket INTEGER DEFAULT NULL")
-        conn.commit()
-        logger.info("Columna mt5_ticket añadida (migración DB)")
-    except Exception:
-        pass  # Ya existe
+    # Migración: añadir columnas nuevas si no existen (DB antigua)
+    migrations = [
+        ("mt5_ticket",     "INTEGER DEFAULT NULL"),
+        # Features ML — antes solo vivían en memoria y el modelo entrenaba
+        # con ceros; ahora se persisten para entrenar con datos reales
+        ("vp_score",       "REAL DEFAULT NULL"),
+        ("delta_score",    "REAL DEFAULT NULL"),
+        ("atr_pct",        "REAL DEFAULT NULL"),
+        ("hurst",          "REAL DEFAULT NULL"),
+        ("adx",            "REAL DEFAULT NULL"),
+        ("pairs_score",    "REAL DEFAULT NULL"),
+        ("ml_proba",       "REAL DEFAULT NULL"),
+        ("regime",         "TEXT DEFAULT NULL"),
+        ("sweep_score",    "REAL DEFAULT NULL"),
+        ("fvg_score",      "REAL DEFAULT NULL"),
+        ("m15_aligned",    "INTEGER DEFAULT NULL"),
+        ("entry_type",     "TEXT DEFAULT NULL"),
+        # Distancia (en ATR) al pool de liquidez HTF más cercano en contra
+        # de la señal; 99 = sin pool — feature ML del veto de liquidez
+        ("htf_liq_dist",   "REAL DEFAULT NULL"),
+        # Estado de gestión activa (TradeManager)
+        ("partial_closed", "INTEGER DEFAULT 0"),
+        # Capa FundedNext 2K (ejecución manual del usuario)
+        ("funded_lots",     "REAL DEFAULT NULL"),
+        ("funded_risk_usd", "REAL DEFAULT NULL"),
+        ("funded_apta",     "INTEGER DEFAULT 0"),
+        ("funded_entry",    "REAL DEFAULT NULL"),
+        ("funded_sl",       "REAL DEFAULT NULL"),
+        ("funded_pnl",      "REAL DEFAULT NULL"),
+        ("funded_applied",  "INTEGER DEFAULT 0"),
+        # Modelo de entrada: OB (retroceso clásico) | SWEEP_REVERSAL | DAYTRADE
+        ("model",           "TEXT DEFAULT 'OB'"),
+        # Capa cuenta personal pequeña (ejecución manual del usuario)
+        ("personal_lots",     "REAL DEFAULT NULL"),
+        ("personal_risk_acc", "REAL DEFAULT NULL"),
+        ("personal_apta",     "INTEGER DEFAULT 0"),
+        ("personal_entry",    "REAL DEFAULT NULL"),
+        ("personal_sl",       "REAL DEFAULT NULL"),
+        ("personal_pnl",      "REAL DEFAULT NULL"),
+        ("personal_applied",  "INTEGER DEFAULT 0"),
+    ]
+    for col, decl in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE signals ADD COLUMN {col} {decl}")
+            conn.commit()
+            logger.info(f"Columna {col} añadida (migración DB)")
+        except Exception:
+            pass  # Ya existe
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS performance (
@@ -129,6 +174,18 @@ def init_database(db_path: str):
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS funded_equity (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp       TEXT NOT NULL,
+            equity          REAL NOT NULL,
+            highest_equity  REAL NOT NULL,
+            source          TEXT,
+            signal_id       INTEGER,
+            note            TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info(f"Base de datos lista: {db_path}")
@@ -138,13 +195,22 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
     """Guarda una señal en la base de datos."""
     conn   = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    funded   = signal.get("funded") or {}
+    personal = signal.get("personal") or {}
     cursor.execute("""
         INSERT INTO signals (
             timestamp, symbol, direction, entry, sl, tp1, tp2, rr,
             confidence, confluences, bias_h4, structure_h1, ob_type,
             rsi_state, news_warning, news_blackout, atr, lot_size,
-            sent_telegram, mt5_ticket
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            sent_telegram, mt5_ticket,
+            vp_score, delta_score, atr_pct, hurst, adx, pairs_score,
+            ml_proba, regime, sweep_score, fvg_score, m15_aligned, entry_type,
+            htf_liq_dist,
+            funded_lots, funded_risk_usd, funded_apta, funded_entry, funded_sl,
+            model,
+            personal_lots, personal_risk_acc, personal_apta,
+            personal_entry, personal_sl
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         signal.get("timestamp"),
         signal.get("symbol"),
@@ -166,6 +232,30 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
         lot_size,
         int(sent_tg),
         signal.get("ticket"),  # mt5_ticket — None si no se colocó orden
+        signal.get("vp_score"),
+        signal.get("delta_score"),
+        signal.get("atr_pct"),
+        signal.get("regime_hurst"),
+        signal.get("regime_adx"),
+        signal.get("pairs_score"),
+        signal.get("ml_proba"),
+        signal.get("regime"),
+        signal.get("sweep_score"),
+        signal.get("fvg_score"),
+        signal.get("m15_aligned"),
+        signal.get("entry_type"),
+        signal.get("htf_liq_dist"),
+        funded.get("lots"),
+        funded.get("risk_usd"),
+        int(funded.get("apta", False)),
+        funded.get("entry"),
+        funded.get("sl"),
+        signal.get("model", "OB"),
+        personal.get("lots"),
+        personal.get("risk_acc"),
+        int(personal.get("apta", False)),
+        personal.get("entry"),
+        personal.get("sl"),
     ))
     conn.commit()
     conn.close()
@@ -218,6 +308,38 @@ def update_obsidian_state(config: dict, acct: dict, db_path: str):
     syms = config.get("symbols", {})
     st   = _get_trade_stats(db_path)
 
+    # Estado cuentas manuales (personal + 2K) — para el bloque de estado
+    p_cfg  = config.get("personal", {}) or {}
+    dt_cfg = config.get("daytrade", {}) or {}
+    p_line = "- Cuenta personal: desactivada"
+    if p_cfg.get("enabled"):
+        p_eq = float(p_cfg.get("balance", 200))
+        try:
+            _c = sqlite3.connect(db_path)
+            _r = _c.execute(
+                "SELECT equity FROM personal_equity ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            _c.close()
+            if _r:
+                p_eq = float(_r[0])
+        except Exception:
+            pass
+        p_line = (
+            f"- 💼 {p_cfg.get('title', 'MI CUENTA')}: {p_eq:,.2f} "
+            f"{p_cfg.get('currency', 'EUR')} | riesgo "
+            f"{p_cfg.get('risk_per_trade', 0.01)*100:.0f}%/trade | "
+            f"apta si riesgo ≤ {p_cfg.get('max_risk_pct', 0.03)*100:.0f}% | /saldo para sync"
+        )
+    dt_line = "- ⚡ DAYTRADE M15: desactivado"
+    if dt_cfg.get("enabled"):
+        dt_hours = dt_cfg.get("hours_utc", "") or "sesión global"
+        dt_line = (
+            f"- ⚡ DAYTRADE M15: bias H1 + OB M15 | umbral "
+            f"{dt_cfg.get('min_confluences', 4.0)}/8.0 | TP1 "
+            f"{dt_cfg.get('min_rr', 1.5)}R | horas {dt_hours} UTC | "
+            f"ilimitadas (dedup contexto) | manual | backtest: WR 41% PF 1.31"
+        )
+
     recent_lines = "\n".join(
         f"  - {r[0]} {r[1]} {r[2]:.0%} → {r[3]} ({r[4][:16]})" for r in st["recent"]
     ) or "  - Sin señales aún"
@@ -249,12 +371,23 @@ tags:
 
 ## Parámetros activos (config.yaml)
 - Sesión: {sess.get('start', 7)}:00–{sess.get('end', 21)}:00 UTC (solo Londres + NY)
-- Confluencias mín: {risk.get('min_confluences', 4.0)}/13.5 | R:R: {risk.get('min_rr', 2.0)} | Riesgo: {risk.get('risk_per_trade', 0.01)*100:.0f}%
+- Confluencias mín: {risk.get('min_confluences', 5.0)}/16.5 | R:R: {risk.get('min_rr', 2.0)} | Riesgo: {risk.get('risk_per_trade', 0.01)*100:.0f}%
 - Trading: solo XAUUSD (forex desactivado tras backtest — WR 27-31%)
-- Módulos: SMC + VP COMEX + Delta ticks + TPO + ML + Macro + DXY sintético
+- Módulos: SMC + VP COMEX + Delta ticks + TPO + ML + Macro + DXY + FVG + Sweep + M15
+- Gestión activa: entry retroceso OB · parcial 50% en TP1 · runner a TP2 con trailing ATR
 
-## Backtest validado (XAUUSD H1, 1 año con comisiones)
-- Win Rate: **42.1%** | PF: **1.45** | Max DD: **24.9%** | Sharpe: **2.82** | Retorno: **+146%**
+## Streams de señales (3 en paralelo)
+- 📊 INTRADAY H1: auto-ejecutada en demo (backtest validado)
+{dt_line}
+- 📅 SWING D1→H4: 1-3/semana, manual
+
+## Cuentas manuales (bloques en cada señal Telegram)
+{p_line}
+- 🏦 FUNDEDNEXT 2K: trailing DD 6% | /funded · /equity para sync
+
+## Backtest validado (XAUUSD H1, 1 año con comisiones — upgrade 2026-06-11)
+- Win Rate: **42.1%** | PF: **1.61** | Max DD: **12.0%** | Sharpe: **3.02** | Retorno: **+105%**
+- Entry retroceso OB + BE@1R + parcial 50%@TP1 + trailing runner (64 trades salvados por BE)
 
 ## Rendimiento en vivo
 - WIN: {st['wins']} | LOSS: {st['losses']} | EXPIRED: {st.get('expired',0)} | PENDING: {st['pending']}
@@ -444,11 +577,18 @@ class TradingSystem:
         self.news  = NewsFeed(config.get("apis", {}).get("finnhub_key", ""))
         self.risk  = RiskManager(config)
 
+        # Cuenta FundedNext 2K (simulación — ejecución manual del usuario)
+        self.funded = FundedAccountTracker(config, self.db_path)
+
+        # Cuenta personal pequeña (ejecución manual — bloque MI CUENTA)
+        self.personal = PersonalAccountTracker(config, self.db_path)
+
         # Módulos nuevos: correlaciones, macro, ML
         self.corr  = CorrelationEngine(self.mt5)
-        self.macro = MacroFeed()
+        # DXY en tiempo real desde MT5 (formula ICE 6 pares) — yfinance solo fallback
+        self.macro = MacroFeed(correlation_engine=self.corr)
         self.ml    = LearningEngine(self.db_path)
-        self.tracker = OutcomeTracker(self.mt5, self.db_path, executor=None)  # executor se asigna en start()
+        self.tracker = OutcomeTracker(self.mt5, self.db_path, executor=None, config=config)  # executor se asigna en start()
 
         # Módulos avanzados: Volume Profile (COMEX) + Delta (ticks MT5)
         self.vp    = VolumeProfileEngine(config)
@@ -474,9 +614,18 @@ class TradingSystem:
             chat_id=tg.get("chat_id", ""),
         )
 
+        # Alertas proactivas de noticias (T-60/T-15 + post-release)
+        self.news_alerts = NewsAlertManager(self.news, self.telegram, config)
+
         # Motor de ejecución de órdenes en MT5
         self.executor = TradeExecutor(self.mt5, config)
         self._autotrading_warned = False  # evitar spam de aviso
+
+        # Gestión activa de posiciones: parcial en TP1 + trailing del runner
+        self.manager = TradeManager(
+            self.mt5, self.executor, self.db_path, config,
+            telegram=self.telegram if self.telegram.enabled else None,
+        )
 
         primary   = config["symbols"]["primary"]
         secondary = config["symbols"].get("secondary", [])
@@ -542,8 +691,48 @@ class TradingSystem:
         elif ctype == "status":
             self._send_status()
 
+        elif ctype == "estado":
+            self._send_estado()
+
         elif ctype == "revisar":
             self._send_revisar()
+
+        elif ctype == "funded":
+            self.telegram.send_funded_status(self.funded.get_state())
+
+        elif ctype == "micuenta":
+            self.telegram.send_personal_status(self.personal.get_state())
+
+        elif ctype == "saldo":
+            amount = cmd.get("amount", 0)
+            result = self.personal.set_equity(amount)
+            if result.get("ok"):
+                cur = self.personal.currency
+                self.telegram.send_message(
+                    f"✅ Saldo MI CUENTA sincronizado: <b>{amount:,.2f} {cur}</b>"
+                )
+                self.telegram.send_personal_status(result["state"])
+                self.personal.write_state_json()
+            else:
+                self.telegram.send_message(
+                    f"❌ /saldo: {result.get('error', 'error desconocido')}\n"
+                    f"Uso: <code>/saldo 250.00</code>"
+                )
+
+        elif ctype == "equity":
+            amount = cmd.get("amount", 0)
+            result = self.funded.set_equity(amount)
+            if result.get("ok"):
+                self.telegram.send_message(
+                    f"✅ Equity FundedNext sincronizado: <b>${amount:,.2f}</b>"
+                )
+                self.telegram.send_funded_status(result["state"])
+                self.funded.write_state_json()
+            else:
+                self.telegram.send_message(
+                    f"❌ /equity: {result.get('error', 'error desconocido')}\n"
+                    f"Uso: <code>/equity 1985.50</code>"
+                )
 
     def _send_status(self):
         """Responde /status con estadísticas en tiempo real."""
@@ -561,6 +750,9 @@ class TradingSystem:
             risk_note = f" ⚠️ reducido ({mult*100:.0f}%)" if mult < 1.0 else ""
             dd_str    = f"{risk['daily_loss']:.0f}€/{risk['daily_limit']:.0f}€"
             wdd_str   = f"{risk['weekly_loss']:.0f}€/{risk['weekly_limit']:.0f}€"
+            training_mode = self.config.get("risk", {}).get("training_mode", False)
+            if not risk.get("within_limits", True) and training_mode:
+                wdd_str += "\n⚠️ <b>ENTRENAMIENTO: límites DD superados — demo sigue ejecutando</b>"
             regime_str = regime.get("regime", "?")
             adx_str    = f"{regime.get('adx', 0):.1f}"
             hurst_str  = f"{regime.get('hurst', 0):.2f}"
@@ -581,6 +773,114 @@ class TradingSystem:
             self.telegram.send_message(msg)
         except Exception as e:
             logger.warning(f"/status error: {e}")
+
+    def _send_estado(self):
+        """
+        Responde /estado — diagnóstico de señales: por qué NO hay señal
+        ahora mismo, última señal enviada y estado de la cuenta 2K.
+        Resuelve el problema del 12-jun: "no me llegó ninguna notificación
+        y no sé por qué".
+        """
+        try:
+            lines = [
+                "🩺 <b>DIAGNÓSTICO DE SEÑALES</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+            ]
+            now = datetime.now(timezone.utc)
+
+            # Última señal enviada (de la DB)
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cur  = conn.cursor()
+                cur.execute("""
+                    SELECT timestamp, symbol, direction, entry, outcome
+                    FROM signals ORDER BY id DESC LIMIT 1
+                """)
+                row = cur.fetchone()
+                conn.close()
+            except Exception:
+                row = None
+            if row:
+                try:
+                    last_t  = datetime.fromisoformat(row[0])
+                    if last_t.tzinfo is None:
+                        last_t = last_t.replace(tzinfo=timezone.utc)
+                    age_min = (now - last_t).total_seconds() / 60
+                    age_str = f"hace {age_min/60:.1f}h" if age_min >= 90 else f"hace {age_min:.0f} min"
+                except Exception:
+                    age_str = row[0][:16]
+                lines.append(
+                    f"📡 Última señal: {row[1]} {row[2]} @ {row[3]:.2f} "
+                    f"({age_str}) → {row[4]}"
+                )
+            else:
+                lines.append("📡 Última señal: ninguna registrada aún")
+
+            # Motivo del último descarte por símbolo (lo escribe SignalEngine)
+            lines.append("")
+            lines.append("🚫 <b>Por qué no hay señal ahora:</b>")
+            discards = getattr(self.signals, "last_discard", {}) or {}
+            if discards:
+                for sym, d in discards.items():
+                    try:
+                        d_t   = datetime.fromisoformat(d["time"])
+                        d_age = (now - d_t).total_seconds() / 60
+                        t_str = f" (hace {d_age:.0f} min)"
+                    except Exception:
+                        t_str = ""
+                    lines.append(f"  • {sym}: {d['reason']}{t_str}")
+            else:
+                lines.append("  • Sin análisis descartados todavía en esta sesión")
+
+            # Próxima noticia de alto impacto
+            try:
+                stat = self.news.is_news_blackout(
+                    minutes_buffer=self.config.get("sessions", {}).get("avoid_news_minutes", 30))
+                nxt = stat.get("next_event")
+                if stat.get("blackout"):
+                    lines.append(f"\n📰 ⛔ BLACKOUT: {stat['reason']}")
+                elif nxt:
+                    mins = (nxt["time"] - now).total_seconds() / 60
+                    lines.append(
+                        f"\n📰 Próximo dato: {nxt['event']} ({nxt['country']}) "
+                        f"en {mins/60:.1f}h" if mins >= 90 else
+                        f"\n📰 Próximo dato: {nxt['event']} ({nxt['country']}) "
+                        f"en {mins:.0f} min"
+                    )
+            except Exception:
+                pass
+
+            # Estado 2K compacto
+            try:
+                st = self.funded.get_state()
+                if st.get("enabled"):
+                    breach = " 🚨 BREACH" if st.get("breached") else ""
+                    lines.append(
+                        f"\n🏦 2K: ${st['equity']:,.2f} | floor ${st['floor']:,.2f} "
+                        f"| room ${st['room']:,.2f}{breach}"
+                    )
+            except Exception:
+                pass
+
+            # Estado MI CUENTA compacto
+            try:
+                ps = self.personal.get_state()
+                if ps.get("enabled"):
+                    low = " ⚠️ BAJO MÍNIMO" if ps.get("too_low") else ""
+                    lines.append(
+                        f"💼 {ps['title']}: {ps['equity']:,.2f} {ps['currency']} "
+                        f"(P&L {ps['pnl']:+,.2f}){low}"
+                    )
+            except Exception:
+                pass
+
+            lines.append(
+                f"\n🔄 Ciclo #{self._cycle_count} | {now.strftime('%H:%M')} UTC | "
+                f"el bot está vivo y analizando cada 60s"
+            )
+            self.telegram.send_message("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"/estado error: {e}")
 
     def _send_revisar(self):
         """Responde /revisar con estado de órdenes pendientes + validez del setup."""
@@ -703,6 +1003,14 @@ class TradingSystem:
             "risk":          {},
         }
 
+        # ── Alertas proactivas de noticias (T-60/T-15 + post-release) ──
+        try:
+            n_alerts = self.news_alerts.check()
+            if n_alerts:
+                logger.info(f"[NEWS] {n_alerts} alerta(s) de noticias enviadas")
+        except Exception as e:
+            logger.debug(f"News alerts: {e}")
+
         # ── Noticias ──────────────────────────────────────────
         avoid_min = self.config.get("sessions", {}).get("avoid_news_minutes", 30)
         try:
@@ -740,14 +1048,47 @@ class TradingSystem:
             observation_reason = f"🌙 {session_ok['reason']}"
             logger.info(f"Fuera de horario — modo observación (señales sin ejecución)")
 
+        training_mode = self.config.get("risk", {}).get("training_mode", False)
+        dd_warning    = ""
         if not risk_summary.get("within_limits", True):
             dd_type = "semanal" if risk_summary.get("weekly_loss", 0) >= risk_summary.get("weekly_limit", 1e9) else "diario"
-            observation_mode   = True
-            observation_reason = f"⛔ Drawdown {dd_type} alcanzado — solo señales, sin ejecución"
-            logger.warning(f"Límite drawdown — modo observación")
+            if training_mode:
+                # Honestidad: sigue ejecutando pero el estado se muestra en
+                # Telegram, /status y dashboard (antes era invisible)
+                dd_warning = f"⚠️ Drawdown {dd_type} superado — demo sigue ejecutando (modo entrenamiento)"
+                market_state["risk"]["training_override_active"] = True
+                logger.warning(f"[ENTRENAMIENTO] Límite drawdown {dd_type} alcanzado — continuando por training_mode=True")
+            else:
+                observation_mode   = True
+                observation_reason = f"⛔ Drawdown {dd_type} alcanzado — solo señales, sin ejecución"
+                logger.warning(f"Límite drawdown — modo observación")
 
         # ── Analizar cada símbolo ─────────────────────────────
-        active_count = 0
+        # FIX CRÍTICO: contar posiciones abiertas + órdenes pendientes REALES
+        # en MT5 — antes empezaba en 0 cada ciclo y el límite max_simultaneous
+        # nunca se aplicaba (señales apiladas en la misma dirección)
+        try:
+            active_count = (
+                len(self.executor.get_open_positions()) +
+                len(self.executor.get_pending_orders())
+            )
+        except Exception:
+            active_count = 0
+
+        # Equity viva para position sizing (compuesto real, no capital fijo)
+        try:
+            live_equity = float(self.mt5.get_account_info().get("equity", 0)) or None
+        except Exception:
+            live_equity = None
+
+        # EURUSD para convertir el riesgo USD del bloque MI CUENTA a EUR
+        eurusd_rate = None
+        try:
+            eur_tick = self.mt5.get_current_price("EURUSD")
+            if eur_tick:
+                eurusd_rate = float(eur_tick["bid"])
+        except Exception:
+            pass
 
         for symbol in self.symbols:
             try:
@@ -784,26 +1125,137 @@ class TradingSystem:
                 }
 
                 # ── Generar señal ─────────────────────────────
-                can = self.risk.can_open_trade(active_count)
-                if not can["ok"]:
-                    logger.info(f"[{symbol}] {can['reason']}")
-                    continue
+                # Las señales NUNCA se suprimen: max_simultaneous solo
+                # bloquea la ejecución automática en demo, no el envío
+                can_exec = self.risk.can_open_trade(active_count)
 
                 signal = self.signals.analyze(symbol)
+                if signal is None and self.config.get("reversal", {}).get("enabled", False) \
+                        and hasattr(self.signals, "analyze_reversal"):
+                    signal = self.signals.analyze_reversal(symbol)
+
+                # ── Señal swing — corre SIEMPRE, independiente del intraday ──
+                # Se evalúa antes del `continue` para no perderse swings cuando
+                # el intraday se descarta (distintos timeframes, distinto setup).
+                if self.config.get("swing", {}).get("enabled", False):
+                    try:
+                        swing_sig = self.signals.analyze_swing(symbol)
+                        if swing_sig is not None:
+                            s_lot = self.risk.calculate_lot_size(
+                                swing_sig["entry"], swing_sig["sl"], symbol,
+                                risk_multiplier=1.0, capital_override=live_equity,
+                            )
+                            swing_sig["lot_size"] = s_lot
+                            try:
+                                sw_funded = self.funded.evaluate_signal(swing_sig)
+                                if sw_funded:
+                                    swing_sig["funded"] = sw_funded
+                            except Exception as fe:
+                                logger.debug(f"Funded swing: {fe}")
+                            try:
+                                sw_personal = self.personal.evaluate_signal(
+                                    swing_sig, eurusd=eurusd_rate)
+                                if sw_personal:
+                                    swing_sig["personal"] = sw_personal
+                            except Exception as pe:
+                                logger.debug(f"Personal swing: {pe}")
+                            if observation_mode and observation_reason:
+                                swing_sig["observation_note"] = observation_reason
+                            if dd_warning:
+                                swing_sig["dd_warning"] = dd_warning
+                            logger.info(
+                                f"[SWING] [{symbol}] {swing_sig['direction']} | "
+                                f"Entry:{swing_sig['entry']} SL:{swing_sig['sl']} "
+                                f"TP1:{swing_sig['tp1']} | R:R:{swing_sig['rr']} | "
+                                f"Conf:{swing_sig['confidence']:.0%} | Lotes:{s_lot}"
+                            )
+                            self.telegram.send_signal(swing_sig)
+                            save_signal(swing_sig, s_lot, True, self.db_path)
+                    except Exception as sw_e:
+                        logger.debug(f"Swing analysis {symbol}: {sw_e}")
+
+                # ── Señal DAYTRADE M15 — corre SIEMPRE, en paralelo ─────
+                # Stream ilimitado para ejecución MANUAL (cuenta personal +
+                # 2K). alert_only: nunca coloca órdenes en MT5.
+                if self.config.get("daytrade", {}).get("enabled", False):
+                    try:
+                        dt_sig = self.signals.analyze_daytrade(symbol)
+                        if dt_sig is not None:
+                            try:
+                                dt_funded = self.funded.evaluate_signal(dt_sig)
+                                if dt_funded:
+                                    dt_sig["funded"] = dt_funded
+                            except Exception as fe:
+                                logger.debug(f"Funded daytrade: {fe}")
+                            try:
+                                dt_personal = self.personal.evaluate_signal(
+                                    dt_sig, eurusd=eurusd_rate)
+                                if dt_personal:
+                                    dt_sig["personal"] = dt_personal
+                            except Exception as pe:
+                                logger.debug(f"Personal daytrade: {pe}")
+                            if dd_warning:
+                                dt_sig["dd_warning"] = dd_warning
+                            logger.info(
+                                f"[DAYTRADE] [{symbol}] {dt_sig['direction']} M15 | "
+                                f"Entry:{dt_sig['entry']} SL:{dt_sig['sl']} "
+                                f"TP1:{dt_sig['tp1']} | Conf:{dt_sig['confidence']:.0%}"
+                            )
+                            self.telegram.send_signal(dt_sig)
+                            save_signal(dt_sig, 0.0, True, self.db_path)
+                    except Exception as dt_e:
+                        logger.debug(f"Daytrade analysis {symbol}: {dt_e}")
+
                 if signal is None:
                     continue
 
-                active_count += 1
+                if not can_exec["ok"]:
+                    signal["exec_block_note"] = (
+                        f"📵 {can_exec['reason']} — señal informativa, sin ejecución demo"
+                    )
+                    logger.info(f"[{symbol}] {can_exec['reason']} — señal enviada solo informativa")
+
                 market_state["symbols"][symbol]["last_signal_time"] = signal["timestamp"]
 
-                # Calcular lot size con multiplicador dinámico por racha
-                risk_mult = self.risk.get_risk_multiplier(self.db_path)
+                # Calcular lot size: racha × confianza de la señal × equity viva
+                streak_mult = self.risk.get_risk_multiplier(self.db_path)
+                conf_mult   = self.risk.get_confidence_multiplier(signal)
+                risk_mult   = max(0.25, min(1.25, streak_mult * conf_mult))
                 lot = self.risk.calculate_lot_size(
-                    signal["entry"], signal["sl"], symbol, risk_multiplier=risk_mult
+                    signal["entry"], signal["sl"], symbol,
+                    risk_multiplier=risk_mult, capital_override=live_equity,
                 )
-                if risk_mult < 1.0:
-                    logger.info(f"[RISK] Lotes reducidos a {risk_mult*100:.0f}% ({lot:.2f}) — racha pérdidas")
+                if risk_mult != 1.0:
+                    logger.info(
+                        f"[RISK] Multiplicador {risk_mult:.2f} "
+                        f"(racha {streak_mult:.2f} × confianza {conf_mult:.2f}) → {lot:.2f} lotes"
+                    )
                 signal["lot_size"] = lot
+
+                # Bloque FundedNext 2K: lotes/riesgo/apta para ejecución manual
+                try:
+                    funded_block = self.funded.evaluate_signal(signal)
+                    if funded_block:
+                        # Modelo reversal: experimental hasta validar en vivo —
+                        # nunca apta para la cuenta fondeada
+                        if signal.get("model") == "SWEEP_REVERSAL" and funded_block.get("apta"):
+                            funded_block["apta"] = False
+                            funded_block["reasons"] = ["modelo reversal experimental — no validado"]
+                        signal["funded"] = funded_block
+                except Exception as e:
+                    logger.debug(f"Funded evaluate: {e}")
+
+                # Bloque MI CUENTA: lotes/riesgo/apta para tu cuenta personal
+                try:
+                    personal_block = self.personal.evaluate_signal(
+                        signal, eurusd=eurusd_rate)
+                    if personal_block:
+                        if signal.get("model") == "SWEEP_REVERSAL" and personal_block.get("apta"):
+                            personal_block["apta"] = False
+                            personal_block["reasons"] = ["modelo reversal experimental — no validado"]
+                        signal["personal"] = personal_block
+                except Exception as e:
+                    logger.debug(f"Personal evaluate: {e}")
 
                 logger.info(
                     f"[SEÑAL] [{symbol}] {signal['direction']} | "
@@ -811,23 +1263,30 @@ class TradingSystem:
                     f"R:R:{signal['rr']} | Conf:{signal['confidence']:.0%} | Lotes:{lot}"
                 )
 
-                # Telegram: señal siempre (modo observación incluido)
-                # Añadir aviso si estamos en modo observación
+                # Telegram: la señal se envía SIEMPRE — los estados
+                # (observación, blackout, drawdown, límite demo) son avisos
                 sent = False
                 if observation_mode and observation_reason:
                     signal["observation_note"] = observation_reason
-                if not signal.get("news_blackout"):
-                    sent = self.telegram.send_signal(signal)
-                elif observation_mode:
-                    # En modo observación mandamos aunque haya blackout (solo aviso)
-                    signal["observation_note"] = observation_reason + " | ⚠️ Precaución: noticia próxima"
-                    sent = self.telegram.send_signal(signal)
+                if dd_warning:
+                    signal["dd_warning"] = dd_warning
+                if signal.get("news_blackout"):
+                    prev_note = signal.get("observation_note", "")
+                    signal["observation_note"] = (
+                        (prev_note + " | " if prev_note else "")
+                        + "⚠️ Precaución: noticia de alto impacto próxima"
+                    )
+                sent = self.telegram.send_signal(signal)
 
                 # ── Ejecución automática en MT5 ──────────────
-                # Solo si: auto_execute=True Y sin blackout Y NO en modo observación
+                # Solo si: auto_execute=True Y sin blackout Y NO en modo
+                # observación Y bajo el límite max_simultaneous Y la señal
+                # no se marcó como solo-informativa (p.ej. reversal en HIGH_VOL)
                 ticket    = None
                 trade_cfg = self.config.get("trading", {})
-                if trade_cfg.get("auto_execute", False) and not signal.get("news_blackout") and not observation_mode:
+                if trade_cfg.get("auto_execute", False) and not signal.get("news_blackout") \
+                        and not observation_mode and can_exec["ok"] \
+                        and not signal.get("no_auto_execute"):
                     # Verificar que AutoTrading está habilitado en MT5
                     term_info = mt5.terminal_info()
                     if term_info and not term_info.trade_allowed:
@@ -846,17 +1305,23 @@ class TradingSystem:
                     else:
                         self._autotrading_warned = False  # resetear si ya está activo
                         try:
+                            # Con gestión activa: TP de la orden = TP2 (runner).
+                            # El TradeManager cierra el parcial en TP1 y hace
+                            # trailing del resto. Sin gestión: TP = TP1 clásico.
+                            mgmt_on  = trade_cfg.get("management", {}).get("enabled", True)
+                            order_tp = signal["tp2"] if (mgmt_on and signal.get("tp2")) else signal["tp1"]
                             ticket = self.executor.place_limit_order(
                                 symbol    = symbol,
                                 direction = signal["direction"],
                                 volume    = float(lot),
                                 entry     = signal["entry"],
                                 sl        = signal["sl"],
-                                tp        = signal["tp1"],
+                                tp        = order_tp,
                                 comment   = f"SMC {signal['confidence']:.0%}",
                             )
                             if ticket:
                                 signal["ticket"] = ticket
+                                active_count += 1  # solo exposición real cuenta para el límite
                                 self.telegram.send_order_placed(signal, ticket)
                                 logger.info(f"[MT5] Orden LIMIT #{ticket} colocada para {symbol}")
                             else:
@@ -885,6 +1350,14 @@ class TradingSystem:
         except Exception as e:
             logger.debug(f"Position tracking: {e}")
 
+        # ── Gestión activa: parcial en TP1 + trailing del runner ──
+        try:
+            mgmt_actions = self.manager.manage_positions()
+            if mgmt_actions > 0:
+                logger.info(f"TradeManager: {mgmt_actions} accion(es) de gestión")
+        except Exception as e:
+            logger.debug(f"TradeManager: {e}")
+
         # ── Outcome tracking: detectar resultados + alertas breakeven ──
         try:
             updated = self.tracker.check_pending_signals()
@@ -900,6 +1373,28 @@ class TradingSystem:
         except Exception as e:
             logger.debug(f"Outcome tracker: {e}")
 
+        # ── FundedNext 2K: aplicar resultados resueltos al equity simulado ──
+        try:
+            applied = self.funded.sync_from_db()
+            if applied and self.telegram.enabled:
+                state = self.funded.get_state()
+                for res in applied:
+                    self.telegram.send_funded_result(res, state)
+            self.funded.write_state_json()
+        except Exception as e:
+            logger.debug(f"Funded sync: {e}")
+
+        # ── MI CUENTA: aplicar resultados resueltos al equity personal ──
+        try:
+            p_applied = self.personal.sync_from_db()
+            if p_applied and self.telegram.enabled:
+                p_state = self.personal.get_state()
+                for res in p_applied:
+                    self.telegram.send_personal_result(res, p_state)
+            self.personal.write_state_json()
+        except Exception as e:
+            logger.debug(f"Personal sync: {e}")
+
         # ── Revisar validez de órdenes pendientes (cada 5 ciclos ≈ 5 min) ──
         self._cycle_count += 1
         if self._cycle_count % 5 == 0:
@@ -907,6 +1402,15 @@ class TradingSystem:
                 self._review_pending_orders()
             except Exception as e:
                 logger.debug(f"Review orders: {e}")
+
+        # ── Verificación DXY externa (sintético MT5 vs fuente externa) ──
+        dxy_cfg = self.config.get("dxy", {}) or {}
+        if dxy_cfg.get("external_check", False) and \
+                self._cycle_count % int(dxy_cfg.get("check_every_cycles", 5)) == 0:
+            try:
+                self._check_dxy_divergence(dxy_cfg)
+            except Exception as e:
+                logger.debug(f"DXY check: {e}")
 
         # ── Limpiar órdenes expiradas (cada 30 ciclos ≈ 30 min) ─────
         if self._cycle_count % 30 == 0:
@@ -961,7 +1465,41 @@ class TradingSystem:
         if self._cycle_count % 10 == 0:
             acct_refresh = self.mt5.test_connection()
             update_obsidian_state(self.config, acct_refresh, self.db_path)
-        logger.info(f"Ciclo completado - {active_count} senal(es) generada(s)")
+        logger.info(f"Ciclo completado - {active_count} posicion(es)/orden(es) activas en demo")
+
+    def _check_dxy_divergence(self, dxy_cfg: dict):
+        """
+        Compara el DXY sintético (MT5 tiempo real, fórmula ICE 6 pares)
+        con la fuente externa (yfinance ^DXY ≈ TradingView/FastBull).
+        Si divergen > N puntos → avisar UNA vez por hora por Telegram.
+        El valor operativo SIEMPRE es el sintético MT5 (tiempo real);
+        el externo lleva ~15 min de retraso y es solo verificación.
+        """
+        synth = self.corr.get_dxy_realtime()
+        ext   = self.macro.get_dxy_external()
+        if not synth or not ext:
+            return
+        diff      = abs(float(synth) - float(ext))
+        warn_pts  = float(dxy_cfg.get("divergence_warn_points", 0.20))
+        logger.info(f"[DXY] sintético {synth:.3f} vs externo {ext:.3f} (Δ {diff:.3f})")
+        if diff <= warn_pts:
+            return
+        # Anti-spam: máx 1 aviso por hora
+        now = datetime.now(timezone.utc)
+        last = getattr(self, "_last_dxy_warn", None)
+        if last and (now - last).total_seconds() < 3600:
+            return
+        self._last_dxy_warn = now
+        self.telegram.send_message(
+            f"⚠️ <b>DXY: divergencia detectada</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔢 Sintético MT5 (tiempo real): <b>{synth:.3f}</b>\n"
+            f"🌐 Externo (≈TradingView, ~15 min retraso): <b>{ext:.3f}</b>\n"
+            f"Δ {diff:.3f} puntos (umbral {warn_pts:.2f})\n\n"
+            f"Si la divergencia persiste, el feed de pares de MT5 puede estar "
+            f"degradado — verifica el DXY en TradingView/FastBull antes de "
+            f"ejecutar la próxima señal."
+        )
 
     def _send_weekly_report(self):
         """Genera y envía el reporte semanal de rendimiento a Telegram."""
@@ -1035,7 +1573,8 @@ if __name__ == "__main__":
 
     if "--backtest" in sys.argv:
         # ── Modo backtesting ──────────────────────────────────
-        from backtest.backtester import run_backtest
+        # Flags: --no-filters --no-reversal --baseline --from/--to YYYY-MM-DD
+        from backtest.backtester import run_backtest, parse_cli_flags
         from datetime import timedelta
 
         conn = MT5Connector(cfg)
@@ -1043,8 +1582,9 @@ if __name__ == "__main__":
             print("ERROR: MT5 no disponible. ¿Está abierto?")
             sys.exit(1)
 
-        dt_to   = datetime.now(timezone.utc)
-        dt_from = dt_to - timedelta(days=365)
+        bt_flags = parse_cli_flags(sys.argv)
+        dt_to    = bt_flags["date_to"]   or datetime.now(timezone.utc)
+        dt_from  = bt_flags["date_from"] or (dt_to - timedelta(days=365))
 
         # Símbolos a testear — XAUUSD siempre + secundarios si se pasa --all
         symbols_to_test = [cfg["symbols"]["primary"]]
@@ -1053,8 +1593,10 @@ if __name__ == "__main__":
 
         all_results = {}
         for sym in symbols_to_test:
-            print(f"\nIniciando backtest de 1 año sobre {sym} H1...")
-            result = run_backtest(conn, sym, "H1", dt_from, dt_to, cfg)
+            print(f"\nIniciando backtest sobre {sym} H1...")
+            result = run_backtest(conn, sym, "H1", dt_from, dt_to, cfg,
+                                  use_filters=bt_flags["use_filters"],
+                                  use_reversal=bt_flags["use_reversal"])
             if result and "metrics" in result:
                 all_results[sym] = result["metrics"]
 

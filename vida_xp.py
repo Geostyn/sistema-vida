@@ -6,7 +6,7 @@ Los datos persisten en vida_xp.json (auto-generado en la misma carpeta).
 """
 import os
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 XP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vida_xp.json")
@@ -338,14 +338,44 @@ def award_xp(action_key: str, state: Optional[dict] = None, streak_days: int = 0
 
 # ── Actualizar contadores y rachas ──────────────────────────
 def update_streak(streak_key: str, achieved: bool, state: Optional[dict] = None) -> dict:
-    """Actualiza una racha y comprueba logros."""
+    """Actualiza una racha y comprueba logros.
+
+    Dedup diario: una racha sube como MUCHO 1 vez por día natural. Si el mismo
+    hábito se registra varias veces el mismo día, la racha NO vuelve a subir
+    (corrige el bug de que cada mensaje sumaba un día). Se guarda la fecha del
+    último incremento en state["streak_dates"][streak_key]:
+      - ya == hoy   → no incrementa (idempotente)
+      - == ayer     → +1 (continúa la racha)
+      - más antiguo → reset a 1 (racha rota / inicio)
+      - achieved=False → reset a 0
+    """
     if state is None:
         state = load_state()
 
+    hoy = date.today()
+    streak_dates = state.setdefault("streak_dates", {})
+
     if achieved:
-        state["streaks"][streak_key] = state["streaks"].get(streak_key, 0) + 1
+        ultima_str = streak_dates.get(streak_key)
+        ultima = None
+        if ultima_str:
+            try:
+                ultima = date.fromisoformat(ultima_str)
+            except (ValueError, TypeError):
+                ultima = None
+
+        if ultima == hoy:
+            pass  # ya contabilizado hoy → idempotente
+        elif ultima == hoy - timedelta(days=1):
+            state["streaks"][streak_key] = state["streaks"].get(streak_key, 0) + 1
+            streak_dates[streak_key] = hoy.isoformat()
+        else:
+            # primera vez o racha rota (se saltó ≥1 día) → empieza en 1
+            state["streaks"][streak_key] = 1
+            streak_dates[streak_key] = hoy.isoformat()
     else:
         state["streaks"][streak_key] = 0
+        streak_dates.pop(streak_key, None)
 
     messages = check_achievements(state)
     save_state(state)

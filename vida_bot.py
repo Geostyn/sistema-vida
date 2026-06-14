@@ -121,6 +121,7 @@ PROFILE_STEPS = [
 _profile_conv: dict = {}
 _perfil_cache: dict = {}
 _ikigai_conv: dict = {}
+_gym_session: dict = {}   # sesión de entrenamiento activa (modo entrenador)
 
 IKIGAI_STEPS = [
     {"circulo": "amas",    "pregunta": "🌸 <b>Pregunta 1/10 — Lo que AMAS</b>\n\n¿Qué actividades te hacen olvidar el tiempo cuando las haces?"},
@@ -496,8 +497,13 @@ def build_system_prompt() -> str:
 SYSTEM_PROMPT = BASE_SYSTEM_PROMPT  # compatibilidad — se sobreescribe en call_groq
 
 
-def call_groq(user_message: str, vida_state: str) -> dict:
-    """Llama a Groq API (gratuito) y devuelve el JSON parseado."""
+def call_groq(user_message: str, vida_state: str, history: list = None) -> dict:
+    """Llama a Groq API (gratuito) y devuelve el JSON parseado.
+
+    history: lista [{'role','content'}] con las últimas interacciones (memoria
+    conversacional). Se intercala entre el system prompt y el mensaje actual para
+    que el bot recuerde mensajes anteriores (ej. una sesión de gym o una pregunta
+    de seguimiento)."""
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_API_KEY)
@@ -505,12 +511,17 @@ def call_groq(user_message: str, vida_state: str) -> dict:
         system_prompt = build_system_prompt()
         context = f"ESTADO DEL SISTEMA DE VIDA:\n{vida_state[:1500]}\n\n---\n\nMENSAJE DEL USUARIO:\n{user_message}"
 
+        messages = [{"role": "system", "content": system_prompt}]
+        if history:
+            # Solo roles válidos y sin el último (que es el mensaje actual)
+            for h in history[-10:]:
+                if h.get("role") in ("user", "assistant") and h.get("content"):
+                    messages.append({"role": h["role"], "content": h["content"][:1500]})
+        messages.append({"role": "user", "content": context})
+
         chat = client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": context}
-            ],
+            messages=messages,
             max_tokens=1500,
             temperature=0.6,
         )
@@ -536,6 +547,36 @@ def call_groq(user_message: str, vida_state: str) -> dict:
     except Exception as e:
         logger.error(f"Error en Groq: {e}")
         return {"updates": {}, "response": f"Error de conexión con Groq: {e}"}
+
+
+# ── Memoria conversacional persistente (Supabase) ─────────────
+def _load_chat_history(n: int = 10) -> list:
+    """Últimas n interacciones del chat personal para dar contexto a Groq."""
+    if not IS_CLOUD:
+        return []
+    try:
+        import supabase_client as sb
+        return sb.get_historial_chat(CHAT_ID, n=n)
+    except Exception as e:
+        logger.error(f"_load_chat_history: {e}")
+        return []
+
+
+def _save_chat_turn(user_text: str, bot_text: str):
+    """Guarda el turno (usuario + bot) y poda el historial antiguo."""
+    if not IS_CLOUD:
+        return
+    try:
+        import supabase_client as sb
+        sb.guardar_mensaje(CHAT_ID, "user", user_text)
+        if bot_text and bot_text.strip():
+            # Quitar HTML básico para no inflar la memoria
+            import re as _re
+            limpio = _re.sub(r"<[^>]+>", "", bot_text)
+            sb.guardar_mensaje(CHAT_ID, "assistant", limpio.strip())
+        sb.limpiar_historial_chat(CHAT_ID, conservar=40)
+    except Exception as e:
+        logger.error(f"_save_chat_turn: {e}")
 
 
 # ── Aplicar updates a Obsidian + XP ───────────────────────────
@@ -800,6 +841,213 @@ def _broadcast_highlights(xp_messages: list[str], xp_state: dict):
     broadcast_to_group(text)
 
 
+# ── Modo sesión de entrenamiento (entrenador personal con memoria) ──
+_GYM_START_KEYS = [
+    "empiezo gym", "empiezo el gym", "empiezo entrenamiento", "empiezo el entrenamiento",
+    "empiezo a entrenar", "empezar gym", "inicio gym", "voy a entrenar", "arranco gym",
+    "empiezo a entrenar gym", "comienzo entrenamiento", "comienzo gym",
+]
+_GYM_END_KEYS = [
+    "termino gym", "termino el gym", "termino entrenamiento", "termino el entrenamiento",
+    "fin gym", "fin del gym", "fin entrenamiento", "fin del entrenamiento",
+    "acabe gym", "acabé gym", "acabe el gym", "acabé el gym", "acabe entrenamiento",
+    "acabé entrenamiento", "termine gym", "terminé gym", "he terminado", "ya termine",
+    "ya terminé", "cerrar gym",
+]
+_DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+
+def _gnum(v):
+    """Convierte '40kg', '40,5', 8 → float; None si no se puede."""
+    try:
+        s = str(v).lower().replace("kg", "").replace("reps", "").replace(",", ".").strip()
+        return float(s) if s else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_gym_sets(text: str) -> list:
+    """Pide a Groq SOLO las series de gym del mensaje. [{ejercicio,reps,peso}]."""
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        prompt = (
+            "Extrae los ejercicios de gimnasio de este mensaje. "
+            "Devuelve SOLO un JSON válido con esta forma exacta:\n"
+            '{"sets":[{"ejercicio":"nombre estándar en minúsculas singular","reps":0,"peso":0}]}\n'
+            "Reglas: reps es entero; peso en kg numérico (0 si es peso corporal o no se indica). "
+            "Un objeto por cada serie o ejercicio mencionado. "
+            'Si el mensaje no contiene ningún ejercicio concreto, devuelve {"sets":[]}.\n\n'
+            f"Mensaje: {text}"
+        )
+        chat = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400, temperature=0.0,
+        )
+        raw = chat.choices[0].message.content
+        import re as _re
+        m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        data = json.loads(m.group()) if m else {}
+        sets = data.get("sets", []) or []
+        return [s for s in sets if isinstance(s, dict) and str(s.get("ejercicio", "")).strip()]
+    except Exception as e:
+        logger.error(f"_extract_gym_sets: {e}")
+        return []
+
+
+def _gym_feedback(ejercicio: str, reps, peso, serie: int) -> str:
+    """Respuesta CORTA de entrenador basada en el historial (sobrecarga progresiva)."""
+    pesoN = _gnum(peso)
+    repsN = int(_gnum(reps)) if _gnum(reps) else None
+    linea = f"✅ <b>{ejercicio.title()}</b> — Serie {serie}: {repsN or '?'} reps"
+    if pesoN:
+        linea += f" × {pesoN:g} kg"
+
+    consejo = ""
+    if IS_CLOUD:
+        try:
+            import supabase_client as sb
+            hist = sb.get_historial_ejercicio(ejercicio, limite_dias=4)
+            hoy = datetime.now().date().isoformat()
+            prev = next((d for d in hist if d.get("fecha") != hoy), None)
+            if prev:
+                pmax, rmax = prev.get("peso_max", 0), prev.get("reps_max", 0)
+                if pesoN and pmax and pesoN > pmax:
+                    consejo = f"🔥 Más peso que tu último día ({pmax:g} kg). ¡Progresión perfecta!"
+                elif pesoN and pmax and pesoN == pmax and repsN and rmax and repsN > rmax:
+                    consejo = f"👏 Mismo peso pero más reps que la última vez ({rmax}). ¡Sigues progresando!"
+                elif pesoN and pmax and pesoN == pmax:
+                    consejo = (f"➡️ Igualas tu último día ({pmax:g} kg × {rmax} reps). "
+                               f"La próxima sube 1-2 reps o +2.5 kg.")
+                elif pesoN and pmax and pesoN < pmax:
+                    consejo = f"⚠️ Menos peso que tu último registro ({pmax:g} kg). ¿Bajada intencional o fatiga?"
+            else:
+                consejo = "📌 Primer registro de este ejercicio — la próxima sesión buscaremos progresar."
+        except Exception as e:
+            logger.error(f"_gym_feedback: {e}")
+
+    if repsN and (repsN < 6 or repsN > 15):
+        consejo += ("\n" if consejo else "") + "🎯 Para hipertrofia el rango ideal es 6-15 reps."
+    return linea + ("\n" + consejo if consejo else "")
+
+
+def _gym_start_session():
+    """Inicia la sesión: un único mensaje con la rutina del día + números a superar."""
+    global _gym_session
+    dia_idx = datetime.now().weekday()  # 0=Lunes
+    rutina, ultima = {}, []
+    if IS_CLOUD:
+        try:
+            import supabase_client as sb
+            rutina = sb.get_rutina_dia(dia_idx)
+            ultima = sb.get_ultima_sesion_resumen()
+        except Exception as e:
+            logger.error(f"_gym_start_session: {e}")
+
+    _gym_session = {"inicio": datetime.now().isoformat(),
+                    "grupo": rutina.get("grupo_muscular", ""), "sets": []}
+
+    partes = [f"💪 <b>¡Empezamos! Entrenamiento — {_DIAS_SEMANA[dia_idx]}</b>", "─" * 22]
+    grupo = rutina.get("grupo_muscular", "")
+    if grupo:
+        partes.append(f"🎯 Hoy toca: <b>{grupo.capitalize()}</b>")
+    ejercicios_rut = rutina.get("ejercicios") or []
+    for ej in ejercicios_rut[:8]:
+        if isinstance(ej, dict):
+            nombre = str(ej.get("ejercicio", "")).title()
+            obj = []
+            if ej.get("series_objetivo"): obj.append(f"{ej['series_objetivo']} series")
+            if ej.get("reps_objetivo"):   obj.append(f"{ej['reps_objetivo']} reps")
+            if ej.get("peso_sugerido"):   obj.append(f"{ej['peso_sugerido']} kg")
+            partes.append(f"  • {nombre}" + (f" — {' · '.join(obj)}" if obj else ""))
+    if ultima:
+        partes += ["", "📈 <b>Tu última sesión (a superar):</b>"]
+        for u in ultima[:8]:
+            partes.append(f"  • {u['ejercicio'].title()}: {u['peso_max']:g} kg × {u['reps_max']} reps")
+    partes += ["", "Dime cada serie (ej: <code>press banca 8 reps 40kg</code>). "
+               "Escribe <b>termino gym</b> al acabar."]
+    send_message("\n".join(partes))
+
+
+def _gym_end_session():
+    """Cierra la sesión con un resumen (series, volumen por ejercicio, PRs)."""
+    global _gym_session
+    sets = _gym_session.get("sets", [])
+    if not sets:
+        send_message("🏁 Entrenamiento cerrado. No registré ninguna serie esta vez.")
+        _gym_session = {}
+        return
+
+    por_ej = {}
+    for s in sets:
+        e = s["ejercicio"]
+        d = por_ej.setdefault(e, {"series": 0, "vol": 0.0, "pmax": 0.0})
+        d["series"] += 1
+        peso = _gnum(s.get("peso")) or 0
+        reps = int(_gnum(s.get("reps")) or 0)
+        d["vol"] += peso * reps
+        d["pmax"] = max(d["pmax"], peso)
+
+    lineas, vol_total = [], 0.0
+    for e, d in por_ej.items():
+        vol_total += d["vol"]
+        l = f"• <b>{e.title()}</b>: {d['series']} series"
+        if d["pmax"]:
+            l += f" · máx {d['pmax']:g} kg"
+        if d["vol"]:
+            l += f" · vol {d['vol']:,.0f} kg"
+        lineas.append(l)
+
+    msg = "🏁 <b>Entrenamiento terminado — Resumen</b>\n" + "─" * 22 + "\n" + "\n".join(lineas)
+    if vol_total:
+        msg += f"\n\n🏋️ Volumen total de la sesión: <b>{vol_total:,.0f} kg</b>"
+    msg += "\n\n💪 ¡Buen trabajo! Descansa y recupera bien."
+    send_message(msg)
+    _gym_session = {}
+
+
+def _handle_gym_session_step(text: str) -> bool:
+    """Procesa un mensaje mientras hay sesión de gym activa. True si lo gestionó."""
+    global _gym_session
+    if not _gym_session:
+        return False
+
+    lower = text.strip().lower()
+    if any(k in lower for k in _GYM_END_KEYS):
+        _gym_end_session()
+        return True
+
+    sets = _extract_gym_sets(text)
+    if not sets:
+        # No hay ejercicio: permitir preguntas al entrenador con memoria de la sesión
+        if lower.endswith("?") or lower.startswith(("?", "dime", "cuanto", "cuánto", "que", "qué", "como", "cómo")):
+            handle_chat_question(text)
+            return True
+        send_message("💪 Dime el ejercicio con reps y peso (ej: <code>press banca 8 reps 40kg</code>), "
+                     "o escribe <b>termino gym</b> para cerrar.")
+        return True
+
+    for s in sets:
+        ejercicio = str(s.get("ejercicio", "")).strip()
+        if not ejercicio:
+            continue
+        serie = 0
+        if IS_CLOUD:
+            try:
+                import supabase_client as sb
+                grupo = sb.clasificar_grupo_muscular(ejercicio)
+                serie = sb.insert_gym_set(ejercicio, s.get("reps"), s.get("peso"), grupo_muscular=grupo)
+                if serie and not sb.deporte_hoy_tiene("gym"):
+                    sb.insert_deporte("Gym", "", "", "💪", "Día de gym (sesión entrenador)")
+            except Exception as e:
+                logger.error(f"_handle_gym_session_step insert: {e}")
+        _gym_session["sets"].append({"ejercicio": ejercicio, "reps": s.get("reps"),
+                                     "peso": s.get("peso"), "serie": serie})
+        send_message(_gym_feedback(ejercicio, s.get("reps"), s.get("peso"), serie or len(_gym_session["sets"])))
+    return True
+
+
 # ── Procesar mensaje ───────────────────────────────────────────
 def process_message(text: str):
     global last_entry_date
@@ -815,6 +1063,16 @@ def process_message(text: str):
             return
 
     lower = text.strip().lower()
+
+    # ── Modo sesión de entrenamiento ──────────────────────────
+    # Iniciar sesión: "empiezo gym", etc. (un solo mensaje de bienvenida)
+    if not _gym_session and any(k in lower for k in _GYM_START_KEYS):
+        _gym_start_session()
+        return
+    # Dentro de una sesión activa: cada serie se procesa sin repetir la intro
+    if _gym_session and not lower.startswith("/"):
+        if _handle_gym_session_step(text):
+            return
 
     if lower in ["/start", "/hola", "/ayuda", "/help"]:
         xp_state = load_state()
@@ -1015,11 +1273,18 @@ def process_message(text: str):
 
     try:
         vida_state = read_vida_state()
-        result     = call_groq(text, vida_state)
+        history    = _load_chat_history()
+        result     = call_groq(text, vida_state, history)
         updates    = result.get("updates", {})
 
         files_updated, xp_messages, alim_guardada = apply_updates(updates)
         last_entry_date = datetime.now().date()
+
+        # Memoria conversacional: guardar el turno del usuario + respuesta del bot
+        respuestas_txt = " ".join(
+            v for v in (result.get("responses", {}) or {}).values() if isinstance(v, str) and v.strip()
+        ) or (result.get("response", "") if isinstance(result.get("response"), str) else "")
+        _save_chat_turn(text, respuestas_txt)
 
         # Confirmación de lo guardado (mensaje breve)
         if files_updated:
@@ -1150,33 +1415,72 @@ def process_receipt_with_groq_vision(img_url: str) -> dict:
         fecha_ticket = dm.group(1)
     logger.info(f"Fecha ticket: {fecha_ticket}")
 
-    # Paso 2: lista de items
-    items = []
-    try:
+    # Paso 2: lista de items (con validación contra el total)
+    def _extraer_items(temp: float) -> list:
+        """Pide la lista de items al modelo y la parsea. Formato: NOMBRE | CANTIDAD | PRECIO_LINEA."""
+        out = []
         chat_items = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "user", "content": [
                 image_content,
                 {"type": "text", "text": (
-                    "List ALL purchased items from this receipt.\n"
-                    "One per line: ORIGINAL_NAME | PRICE\n"
-                    "Keep names in original language. Only lines with prices."
+                    "List EVERY purchased product line from this receipt, exactly as printed.\n"
+                    "Format strictly ONE per line: NAME | QUANTITY | LINE_PRICE\n"
+                    "- LINE_PRICE is the total price of that line (quantity already included), "
+                    "as printed near the product.\n"
+                    "- Belgian receipt: prices use comma as decimal (e.g. 1,29). Copy the EXACT printed amount.\n"
+                    "- QUANTITY: if not printed, use 1.\n"
+                    "- Keep the product NAME in its original language.\n"
+                    "- Do NOT include subtotals, TOTAL, VAT/BTW, change, payment or discount lines.\n"
+                    "- Do NOT invent or round prices; only list lines that have a printed price."
                 )},
             ]}],
-            max_tokens=1000, temperature=0.1,
+            max_tokens=1200, temperature=temp,
         )
         raw_items = chat_items.choices[0].message.content.strip()
-        logger.info(f"Vision items: {raw_items[:200]!r}")
+        logger.info(f"Vision items (t={temp}): {raw_items[:200]!r}")
         for line in raw_items.splitlines():
             if "|" not in line:
                 continue
-            parts = line.split("|")
-            nombre = parts[0].strip().title()
+            parts = [p.strip() for p in line.split("|")]
+            nombre = parts[0].title()
+            # cantidad (si viene en el 2º campo)
+            cantidad = 1
+            if len(parts) >= 3:
+                qm = re.search(r'\d+', parts[1])
+                if qm:
+                    try:
+                        cantidad = max(1, int(qm.group(0)))
+                    except ValueError:
+                        cantidad = 1
             pm = re.search(r'\d+[.,]\d{2}', parts[-1])
-            if nombre and pm:
+            # Excluir líneas de total/IVA aunque traigan precio
+            if nombre and pm and not any(
+                w in nombre.lower() for w in ("total", "totaal", "btw", "tva", "subtot", "korting", "te betalen")
+            ):
                 precio = float(pm.group(0).replace(",", "."))
-                items.append({"nombre": nombre, "traduccion": "", "cantidad": 1,
-                              "precio_unitario": precio, "total": precio})
+                unit = round(precio / cantidad, 2) if cantidad else precio
+                out.append({"nombre": nombre, "traduccion": "", "cantidad": cantidad,
+                            "precio_unitario": unit, "total": precio})
+        return out
+
+    items = []
+    try:
+        items = _extraer_items(0.0)
+        # Validar: la suma de líneas debe parecerse al total impreso.
+        suma = sum(it["total"] for it in items)
+        if total > 0 and items and abs(suma - total) / total > 0.05:
+            logger.info(f"Suma items {suma:.2f} no cuadra con total {total:.2f} → reintento")
+            reintento = _extraer_items(0.0)
+            suma2 = sum(it["total"] for it in reintento)
+            # Quedarse con la lista más cercana al total
+            if reintento and (not items or abs(suma2 - total) < abs(suma - total)):
+                items, suma = reintento, suma2
+            if total > 0 and items and abs(suma - total) / total > 0.05:
+                # Sigue sin cuadrar: el TOTAL manda; marcar items como aproximados.
+                for it in items:
+                    it["notas"] = "precio aproximado (OCR)"
+                logger.warning(f"Items aproximados: suma {suma:.2f} vs total {total:.2f}")
     except Exception as e:
         logger.warning(f"Items no extraídos: {e}")
 
@@ -1884,7 +2188,8 @@ def _save_ikigai_to_obsidian(answers: dict, analysis: dict):
 
 
 def handle_chat_question(text: str):
-    """Modo conversacional libre — no extrae datos, solo responde la pregunta."""
+    """Modo conversacional libre — no extrae datos, solo responde la pregunta.
+    Usa memoria conversacional para responder preguntas de seguimiento con contexto."""
     try:
         context = ""
         if IS_CLOUD:
@@ -1893,27 +2198,38 @@ def handle_chat_question(text: str):
         else:
             context = "Sistema en modo local."
 
+        sesion_txt = ""
+        if _gym_session and _gym_session.get("sets"):
+            ult = _gym_session["sets"][-5:]
+            sesion_txt = "\nSESIÓN DE GYM EN CURSO (series ya hechas hoy):\n" + "\n".join(
+                f"  - {s['ejercicio']}: {s.get('reps','?')} reps × {s.get('peso','?')} kg" for s in ult
+            )
+
         system_prompt = (
-            f"Eres el asistente personal de {PLAYER_NAME}, experto en su Sistema de Vida.\n"
-            f"Estado actual del sistema:\n{context}\n\n"
-            "Responde en español, de forma directa y útil. "
-            "Si pregunta sobre sus datos, úsalos. "
-            "Si da consejos de salud o fitness, fundamenta con evidencia científica. "
+            f"Eres el asistente personal de {PLAYER_NAME}, experto en su Sistema de Vida y su entrenador.\n"
+            f"Estado actual del sistema:\n{context}{sesion_txt}\n\n"
+            "Responde en español, de forma directa y útil, RECORDANDO los mensajes anteriores de la conversación. "
+            "Si pregunta sobre sus datos o su entrenamiento de hoy, úsalos. "
+            "Si da consejos de salud o fitness, fundamenta con evidencia (hipertrofia, carga progresiva). "
             "Sé amigable y motivador. Usa HTML Telegram (<b>, <i>) para formatear."
         )
+        messages = [{"role": "system", "content": system_prompt}]
+        for h in _load_chat_history():
+            if h.get("role") in ("user", "assistant") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"][:1500]})
+        messages.append({"role": "user", "content": text})
+
         from groq import Groq
         client = Groq(api_key=GROQ_API_KEY)
         resp = client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": text},
-            ],
+            messages=messages,
             max_tokens=600,
             temperature=0.7,
         )
         answer = resp.choices[0].message.content.strip()
         send_message(f"🤖 <b>Asistente IA</b>\n{'─' * 22}\n{answer}")
+        _save_chat_turn(text, answer)
     except Exception as e:
         logger.error(f"handle_chat_question: {e}")
         send_message("❌ Error al procesar la pregunta. Inténtalo de nuevo.")

@@ -58,16 +58,39 @@ class RiskManager:
             return 0.5
         return 1.0
 
+    # ── Confidence Multiplier ───────────────────────────────────────
+
+    def get_confidence_multiplier(self, signal: dict) -> float:
+        """
+        Ajusta el riesgo según la calidad de la señal:
+          - Señal premium (ML >= 0.65 y confluencias >= 7) → 1.25x
+          - Señal justa  (confluencias < 5.5)              → 0.75x
+          - Resto                                           → 1.0x
+        Más capital en los mejores setups = mayor beneficio medio por trade.
+        """
+        ml_proba    = float(signal.get("ml_proba", 0.5) or 0.5)
+        confluences = float(signal.get("confluences", 0) or 0)
+
+        if ml_proba >= 0.65 and confluences >= 7.0:
+            return 1.25
+        if confluences < 5.5:
+            return 0.75
+        return 1.0
+
     # ── Position Sizing ─────────────────────────────────────────────
 
     def calculate_lot_size(self, entry: float, sl: float,
                            symbol: str = "XAUUSD",
-                           risk_multiplier: float = 1.0) -> float:
+                           risk_multiplier: float = 1.0,
+                           capital_override: float = None) -> float:
         """
         Calcula el tamaño de posición en lotes.
-        risk_multiplier: ajuste por racha (de get_risk_multiplier).
+        risk_multiplier:  ajuste por racha y confianza.
+        capital_override: equity viva de MT5 (compuesto real) — si None,
+                          usa el capital fijo de config.
         """
-        capital    = float(self.risk_cfg.get("capital", 10000))
+        capital    = float(capital_override) if capital_override else \
+                     float(self.risk_cfg.get("capital", 10000))
         risk_pct   = float(self.risk_cfg.get("risk_per_trade", 0.01))
         risk_usd   = capital * risk_pct * risk_multiplier
 

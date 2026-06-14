@@ -43,7 +43,21 @@ FEATURE_NAMES = [
     "rsi_numeric", "ob_type", "bias_h4",
     "vp_score", "delta_score", "atr_pct",
     "hurst", "adx", "pairs_score",
+    "sweep_score", "fvg_score", "m15_aligned",
+    "htf_liq_dist",   # distancia (ATR) a liquidez HTF en contra; 99 = ninguna
 ]
+
+
+def _f(row, key, default=0.0) -> float:
+    """float() seguro: maneja None/NaN de columnas DB antiguas."""
+    try:
+        v = row.get(key, default)
+        if v is None:
+            return float(default)
+        v = float(v)
+        return float(default) if v != v else v  # NaN check
+    except Exception:
+        return float(default)
 
 
 class LearningEngine:
@@ -114,13 +128,18 @@ class LearningEngine:
         bias_map   = {"BULLISH": 1, "NEUTRAL": 0, "BEARISH": -1}
         bias_h4    = bias_map.get(str(row.get("bias_h4", "NEUTRAL")), 0)
 
-        # Nuevas features (pueden no estar en DB antigua → default seguro)
-        vp_score    = float(row.get("vp_score", 0))
-        delta_score = float(row.get("delta_score", 0))
-        atr_pct     = float(row.get("atr_pct", 0))
-        hurst       = float(row.get("hurst", 0.5))
-        adx         = float(row.get("adx", 20))
-        pairs_score = float(row.get("pairs_score", 0))
+        # Nuevas features (pueden ser NULL en DB antigua → default seguro)
+        vp_score    = _f(row, "vp_score", 0)
+        delta_score = _f(row, "delta_score", 0)
+        atr_pct     = _f(row, "atr_pct", 0)
+        hurst       = _f(row, "hurst", 0.5)
+        adx         = _f(row, "adx", 20)
+        pairs_score = _f(row, "pairs_score", 0)
+        sweep_score = _f(row, "sweep_score", 0)
+        fvg_score   = _f(row, "fvg_score", 0)
+        m15_aligned = _f(row, "m15_aligned", 0)
+        # 99 = sin pool HTF en contra (señales antiguas sin la columna → 99)
+        htf_liq     = _f(row, "htf_liq_dist", 99)
 
         return [
             direction, session, hour, dow,
@@ -128,6 +147,8 @@ class LearningEngine:
             rsi_num, ob_type, bias_h4,
             vp_score, delta_score, atr_pct,
             hurst, adx, pairs_score,
+            sweep_score, fvg_score, m15_aligned,
+            htf_liq,
         ]
 
     # ── Datos de entrenamiento ─────────────────────────────────────
@@ -310,6 +331,19 @@ class LearningEngine:
 
         try:
             features = np.array([self._extract_features(signal)], dtype=float)
+
+            # Modelo antiguo entrenado con menos features → reentrenar ya
+            first = next(iter(self.models.values()))
+            n_expected = getattr(first, "n_features_in_", features.shape[1])
+            if n_expected != features.shape[1]:
+                logger.info(
+                    f"Modelo ML con {n_expected} features pero señal tiene "
+                    f"{features.shape[1]} — reentrenando con el set nuevo"
+                )
+                result = self.train(force=True)
+                if not result.get("trained"):
+                    return 0.5
+
             total_weight = sum(self.weights.values()) or 1.0
             proba_sum    = 0.0
 

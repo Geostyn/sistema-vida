@@ -229,6 +229,49 @@ def sb_insert(table, data: dict) -> bool:
         st.warning(f"Error insertando en {table}: {e}")
         return False
 
+def sb_upsert(table, data: dict, on_conflict: str) -> bool:
+    headers = {**_headers(), "Content-Type": "application/json",
+               "Prefer": "resolution=merge-duplicates,return=minimal"}
+    base    = _base_url()
+    try:
+        r = requests.post(f"{base}/rest/v1/{table}?on_conflict={on_conflict}",
+                          json=data, headers=headers, timeout=10)
+        if not r.ok:
+            st.warning(f"Error al guardar ({r.status_code}): {r.text[:200]}")
+        return r.ok
+    except Exception as e:
+        st.warning(f"Error en upsert {table}: {e}")
+        return False
+
+# ── Clasificación por grupo muscular (espejo del bot, para filas antiguas) ──
+_MUSCULO_KEYWORDS = [
+    ("Hombro",  ["press militar", "press hombro", "elevacion lateral", "elevación lateral",
+                 "elevacion frontal", "elevación frontal", "pajaro", "pájaro", "face pull",
+                 "press arnold", "hombro", "deltoid"]),
+    ("Espalda", ["dominada", "dominadas", "jalon", "jalón", "remo", "peso muerto", "pull over",
+                 "pullover", "espalda", "dorsal", "trapecio", "encogimiento"]),
+    ("Pecho",   ["press banca", "press de banca", "press inclinado", "press plano", "aperturas",
+                 "aperture", "pec deck", "contractor", "press pecho", "pecho", "pectoral"]),
+    ("Bíceps",  ["curl de biceps", "curl de bíceps", "curl biceps", "curl bíceps", "curl martillo",
+                 "curl predicador", "curl concentrado", "curl", "biceps", "bíceps"]),
+    ("Tríceps", ["fondos", "extension triceps", "extensión tríceps", "press frances", "press francés",
+                 "patada triceps", "jalon triceps", "triceps", "tríceps"]),
+    ("Pierna",  ["sentadilla", "squat", "prensa", "zancada", "zancadas", "lunge", "extension cuadriceps",
+                 "extensión cuádriceps", "curl femoral", "gemelo", "gemelos", "hip thrust", "pierna",
+                 "cuadriceps", "cuádriceps", "femoral", "gluteo", "glúteo"]),
+    ("Abdomen", ["abdominal", "abdominales", "plancha", "crunch", "elevacion piernas",
+                 "elevación piernas", "rueda abdominal", "abdomen", "core"]),
+]
+
+def clasificar_musculo(ejercicio: str) -> str:
+    ej = str(ejercicio).strip().lower()
+    if not ej:
+        return "Otros"
+    for grupo, claves in _MUSCULO_KEYWORDS:
+        if any(k in ej for k in claves):
+            return grupo
+    return "Otros"
+
 # ── Constantes ────────────────────────────────────────────────
 TODAY       = date.today().isoformat()
 MONTH_START = TODAY[:8] + "01"
@@ -437,88 +480,110 @@ with tab2:
 
     st.divider()
 
-    # ════ DÍAS DE GYM — ejercicios, series, reps y peso ══════════
-    st.subheader("🏋️ Días de Gym")
+    # ════ GIMNASIO — por grupo muscular, editable, con gráficos ════
+    st.subheader("🏋️ Gimnasio")
 
     DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    GRUPO_EMOJI = {"Hombro": "🫷", "Pecho": "🟦", "Espalda": "🟩", "Bíceps": "💪",
+                   "Tríceps": "🔺", "Pierna": "🦵", "Abdomen": "🧱", "Otros": "⚪"}
+    GRUPO_ORDEN = ["Pecho", "Espalda", "Hombro", "Bíceps", "Tríceps", "Pierna", "Abdomen", "Otros"]
+
     gym_data = q("gym_ejercicios", order="created_at", desc=False, limit=2000)
 
     if not gym_data:
         st.info("Aún no hay ejercicios de gym registrados. Díctale al bot: "
-                "*\"curl de bíceps 12 reps con 10kg\"* — cada repetición del mismo "
-                "ejercicio en el día se guarda como la siguiente serie.")
+                "*\"empiezo gym\"* y luego *\"press banca 8 reps 40kg\"* — cada repetición del "
+                "mismo ejercicio en el día se guarda como la siguiente serie.")
     else:
         df_gym = pd.DataFrame(gym_data)
         df_gym["reps"] = pd.to_numeric(df_gym.get("reps"), errors="coerce").fillna(0).astype(int)
         df_gym["peso"] = pd.to_numeric(df_gym.get("peso"), errors="coerce").fillna(0.0)
         df_gym["volumen"] = df_gym["reps"] * df_gym["peso"]
+        # Grupo muscular: se deriva del nombre del ejercicio (consistente y cubre filas antiguas)
+        df_gym["grupo"] = df_gym["ejercicio"].apply(clasificar_musculo)
 
         fechas_gym = sorted(df_gym["fecha"].unique(), reverse=True)
         gym_mes = df_gym[df_gym["fecha"] >= MONTH_START]
 
         g1, g2, g3, g4 = st.columns(4)
-        g1.metric("📅 Días de gym (mes)",  gym_mes["fecha"].nunique())
-        g2.metric("🔩 Series (mes)",       len(gym_mes))
-        g3.metric("🏋️ Volumen mes",       f"{gym_mes['volumen'].sum():,.0f} kg")
+        g1.metric("📅 Días de gym (mes)", gym_mes["fecha"].nunique())
+        g2.metric("🔩 Series (mes)",      len(gym_mes))
+        g3.metric("🎯 Grupos (mes)",      gym_mes["grupo"].nunique())
         ult_dia = df_gym[df_gym["fecha"] == fechas_gym[0]]
-        g4.metric("⚡ Último entreno",     f"{ult_dia['volumen'].sum():,.0f} kg")
+        g4.metric("⚡ Volumen último entreno", f"{ult_dia['volumen'].sum():,.0f} kg")
 
-        # ── Progresión: volumen por día de gym ───────────────────
-        vol_dia = df_gym.groupby("fecha")["volumen"].sum().reset_index()
-        if len(vol_dia) > 1:
-            fig_vol = go.Figure(go.Bar(
-                x=vol_dia["fecha"], y=vol_dia["volumen"],
-                marker=dict(color="#4CAF50"),
-                text=[f"{v:,.0f}" for v in vol_dia["volumen"]],
-                textposition="outside",
+        # ── Progreso por grupo muscular (cada ejercicio con su gráfico) ──
+        st.markdown("### 📊 Progreso por grupo muscular")
+        grupos_presentes = [g for g in GRUPO_ORDEN if g in set(df_gym["grupo"])]
+
+        def _chart_ejercicio(df_ej, titulo):
+            prog = (df_ej.groupby("fecha")
+                    .agg(peso_max=("peso", "max"), reps_max=("reps", "max"),
+                         volumen=("volumen", "sum"), series=("serie", "count"))
+                    .reset_index().sort_values("fecha"))
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=prog["fecha"], y=prog["peso_max"], name="Peso máx (kg)",
+                mode="lines+markers+text",
+                text=[f"{p:g}×{r}" for p, r in zip(prog["peso_max"], prog["reps_max"])],
+                textposition="top center",
+                line=dict(color="#FF9800", width=3), marker=dict(size=9),
             ))
-            fig_vol.update_layout(
-                title="📈 Volumen total por día de gym (kg levantados)",
-                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                font=dict(color="white"), height=240, margin=dict(t=50, b=20),
+            fig.add_trace(go.Bar(
+                x=prog["fecha"], y=prog["volumen"], name="Volumen (kg)",
+                marker=dict(color="rgba(76,175,80,0.35)"), yaxis="y2",
+            ))
+            fig.update_layout(
+                title=titulo, paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                font=dict(color="white"), height=240, margin=dict(t=46, b=20),
                 xaxis=dict(type="category"),
+                yaxis=dict(title="kg"),
+                yaxis2=dict(title="vol", overlaying="y", side="right", showgrid=False),
+                legend=dict(orientation="h", y=-0.2),
             )
-            st.plotly_chart(fig_vol, use_container_width=True)
+            return fig
 
-        # ── Progresión por ejercicio (peso máximo) ────────────────
-        ejercicios_unicos = sorted(df_gym["ejercicio"].unique())
-        if ejercicios_unicos:
-            ej_sel = st.selectbox("📊 Ver progresión de un ejercicio",
-                                  ejercicios_unicos, key="gym_ej_sel")
-            df_ej = df_gym[df_gym["ejercicio"] == ej_sel]
-            prog = df_ej.groupby("fecha").agg(
-                peso_max=("peso", "max"), reps_max=("reps", "max"),
-                series=("serie", "count")).reset_index()
-            if len(prog) >= 1:
-                fig_prog = go.Figure()
-                fig_prog.add_trace(go.Scatter(
-                    x=prog["fecha"], y=prog["peso_max"],
-                    mode="lines+markers+text",
-                    text=[f"{p:g} kg" for p in prog["peso_max"]],
-                    textposition="top center",
-                    line=dict(color="#FF9800", width=3),
-                    marker=dict(size=10),
-                ))
-                fig_prog.update_layout(
-                    title=f"Peso máximo — {ej_sel.title()}",
-                    paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                    font=dict(color="white"), height=240, margin=dict(t=50, b=20),
-                    xaxis=dict(type="category"), yaxis=dict(title="kg"),
-                )
-                st.plotly_chart(fig_prog, use_container_width=True)
+        for grupo in grupos_presentes:
+            df_g = df_gym[df_gym["grupo"] == grupo]
+            ejercicios_g = sorted(df_g["ejercicio"].unique())
+            with st.expander(f"{GRUPO_EMOJI.get(grupo,'⚪')} {grupo} — {len(ejercicios_g)} ejercicios"):
+                for ej in ejercicios_g:
+                    df_ej = df_g[df_g["ejercicio"] == ej]
+                    # Resumen último día vs anterior (carga progresiva)
+                    por_dia = (df_ej.groupby("fecha")
+                               .agg(peso_max=("peso", "max"), reps_max=("reps", "max"))
+                               .reset_index().sort_values("fecha"))
+                    ult = por_dia.iloc[-1]
+                    tendencia = ""
+                    if len(por_dia) >= 2:
+                        prev = por_dia.iloc[-2]
+                        if ult["peso_max"] > prev["peso_max"]:
+                            tendencia = " 🔺 subiendo peso"
+                        elif ult["peso_max"] == prev["peso_max"] and ult["reps_max"] > prev["reps_max"]:
+                            tendencia = " 🔼 más reps"
+                        elif ult["peso_max"] < prev["peso_max"]:
+                            tendencia = " 🔻 bajó peso"
+                        else:
+                            tendencia = " ➡️ estable (toca subir)"
+                    st.markdown(f"**💪 {ej.title()}** — último: {ult['peso_max']:g} kg × "
+                                f"{int(ult['reps_max'])} reps{tendencia}")
+                    if len(por_dia) >= 1:
+                        st.plotly_chart(_chart_ejercicio(df_ej, ej.title()),
+                                        use_container_width=True, key=f"chart_{grupo}_{ej}")
 
-        # ── Lista de días: clic → desglose completo ───────────────
-        st.markdown("**📋 Entrenamientos por día** — toca un día para ver el desglose")
+        # ── Entrenamientos por día (desglose) ─────────────────────
+        st.markdown("### 📋 Entrenamientos por día")
         for fch in fechas_gym[:30]:
             dia_df = df_gym[df_gym["fecha"] == fch].sort_values("created_at")
             n_ej   = dia_df["ejercicio"].nunique()
             n_ser  = len(dia_df)
             vol    = dia_df["volumen"].sum()
+            grupos_dia = " · ".join(sorted(dia_df["grupo"].unique()))
             try:
                 dia_sem = DIAS_ES[datetime.fromisoformat(str(fch)).weekday()]
             except Exception:
                 dia_sem = ""
-            label = (f"🏋️ Gym — {dia_sem} {fch}  ·  {n_ej} ejercicios  ·  "
+            label = (f"🏋️ {dia_sem} {fch}  ·  {grupos_dia}  ·  {n_ej} ejercicios  ·  "
                      f"{n_ser} series  ·  {vol:,.0f} kg")
             with st.expander(label):
                 for ej in dia_df["ejercicio"].unique():
@@ -535,8 +600,83 @@ with tab2:
                             t += f" × {s['peso']:g} kg"
                         series_txt.append(t)
                     st.markdown("&nbsp;&nbsp;" + "  ·  ".join(series_txt))
-                st.caption(f"Volumen del día: **{vol:,.0f} kg** "
-                           f"(reps × peso de todas las series)")
+                st.caption(f"Volumen del día: **{vol:,.0f} kg** (reps × peso de todas las series)")
+
+        # ── Editor de series de gym (corregir reps/peso/ejercicio o borrar) ──
+        with st.expander("✏️ Editar / borrar series registradas"):
+            df_edit_gym = df_gym.sort_values("created_at", ascending=False)[
+                ["id", "fecha", "grupo", "ejercicio", "serie", "reps", "peso"]].head(60).copy()
+            df_edit_gym.insert(0, "🗑️", False)
+            edited_gym = st.data_editor(
+                df_edit_gym, hide_index=True, use_container_width=True,
+                num_rows="fixed", key="editor_gym",
+                column_config={
+                    "🗑️":        st.column_config.CheckboxColumn("🗑️", width="small"),
+                    "id":         st.column_config.TextColumn("ID", disabled=True, width="small"),
+                    "fecha":      st.column_config.TextColumn("Fecha", width="small"),
+                    "grupo":      st.column_config.TextColumn("Grupo", disabled=True, width="small"),
+                    "ejercicio":  st.column_config.TextColumn("Ejercicio"),
+                    "serie":      st.column_config.NumberColumn("Serie", width="small"),
+                    "reps":       st.column_config.NumberColumn("Reps", width="small"),
+                    "peso":       st.column_config.NumberColumn("Peso (kg)", format="%.1f"),
+                })
+            cge1, cge2 = st.columns(2)
+            with cge1:
+                if st.button("💾 Guardar cambios gym", type="primary", use_container_width=True):
+                    saved = sum(sb_patch("gym_ejercicios", r["id"], {
+                        "ejercicio": str(r["ejercicio"]).strip().lower(),
+                        "serie": int(r["serie"]), "reps": int(r["reps"]),
+                        "peso": float(r["peso"]),
+                        "grupo_muscular": clasificar_musculo(r["ejercicio"]).lower(),
+                    }) for _, r in edited_gym[~edited_gym["🗑️"]].iterrows())
+                    st.success(f"✅ {saved} series guardadas")
+                    st.rerun()
+            with cge2:
+                to_del_gym = edited_gym[edited_gym["🗑️"] == True]
+                if len(to_del_gym) and st.button(f"🗑️ Borrar {len(to_del_gym)}",
+                                                  use_container_width=True, key="del_gym"):
+                    for _, r in to_del_gym.iterrows():
+                        sb_delete("gym_ejercicios", r["id"])
+                    st.success("Borrado.")
+                    st.rerun()
+
+    # ── Rutina semanal editable ───────────────────────────────────
+    with st.expander("🗓️ Mi rutina semanal (split por día)"):
+        st.caption("Define qué grupo trabajas cada día y los ejercicios objetivo. "
+                   "El entrenador del bot la usa al escribir *\"empiezo gym\"*.")
+        rutina_rows = q("rutina_gym", order="dia_semana")
+        rutina_by_dia = {int(r["dia_semana"]): r for r in (rutina_rows or [])}
+        filas = []
+        for i, dia in enumerate(DIAS_ES):
+            r = rutina_by_dia.get(i, {})
+            ejs = r.get("ejercicios") or []
+            if isinstance(ejs, str):
+                try:
+                    ejs = json.loads(ejs)
+                except Exception:
+                    ejs = []
+            nombres = ", ".join(e.get("ejercicio", "") for e in ejs if isinstance(e, dict)) \
+                if ejs else ""
+            filas.append({"Día": dia, "grupo": r.get("grupo_muscular", ""), "ejercicios": nombres})
+        df_rut = pd.DataFrame(filas)
+        edited_rut = st.data_editor(
+            df_rut, hide_index=True, use_container_width=True, num_rows="fixed", key="editor_rutina",
+            column_config={
+                "Día":        st.column_config.TextColumn("Día", disabled=True, width="small"),
+                "grupo":      st.column_config.TextColumn("Grupo muscular", width="medium"),
+                "ejercicios": st.column_config.TextColumn("Ejercicios (separados por coma)"),
+            })
+        if st.button("💾 Guardar rutina", type="primary", use_container_width=True, key="save_rutina"):
+            n = 0
+            for i, (_, r) in enumerate(edited_rut.iterrows()):
+                lista = [{"ejercicio": e.strip()} for e in str(r["ejercicios"]).split(",") if e.strip()]
+                if sb_upsert("rutina_gym", {
+                    "dia_semana": i, "grupo_muscular": str(r["grupo"]).strip(),
+                    "ejercicios": lista,
+                }, on_conflict="dia_semana"):
+                    n += 1
+            st.success(f"✅ Rutina guardada ({n} días)")
+            st.rerun()
 
     st.divider()
 
@@ -1201,10 +1341,14 @@ with tab5:
 """)
 
         kbc_file = st.file_uploader(
-            "Sube el CSV de KBC",
-            type=["csv"],
+            "Sube el extracto de KBC (CSV o PDF)",
+            type=["csv", "pdf"],
             key="kbc_csv_uploader",
             label_visibility="collapsed",
+        )
+        kbc_desde = st.text_input(
+            "📅 Contar solo desde el mes (YYYY-MM) — déjalo vacío para importar todo",
+            value="", key="kbc_desde_mes", placeholder="2026-06",
         )
 
         def _parse_kbc_csv(uploaded) -> list[dict]:
@@ -1276,22 +1420,74 @@ with tab5:
                 })
             return rows
 
+        def _parse_kbc_pdf(uploaded) -> list[dict]:
+            """Extrae movimientos de un extracto PDF de KBC (heurístico: línea con
+            fecha + importe con coma decimal). El signo '-' marca gasto."""
+            import io, re
+            try:
+                import pdfplumber
+            except ImportError:
+                st.error("Falta `pdfplumber`. Añádelo a requirements_vida.txt y vuelve a desplegar.")
+                return []
+            date_re   = re.compile(r'(\d{2})[/-](\d{2})[/-](\d{4})')
+            amount_re = re.compile(r'(-?\s?\d{1,3}(?:[.\s]\d{3})*,\d{2})')
+            rows = []
+            try:
+                with pdfplumber.open(io.BytesIO(uploaded.getvalue())) as pdf:
+                    for page in pdf.pages:
+                        for line in (page.extract_text() or "").splitlines():
+                            dm = date_re.search(line)
+                            ams = amount_re.findall(line)
+                            if not (dm and ams):
+                                continue
+                            d, mo, y = dm.group(1), dm.group(2), dm.group(3)
+                            raw_amt = ams[-1].replace(" ", "").replace(".", "").replace(",", ".")
+                            try:
+                                amount = float(raw_amt)
+                            except ValueError:
+                                continue
+                            desc = amount_re.sub("", date_re.sub("", line)).strip()
+                            rows.append({"date": f"{y}-{mo}-{d}", "amount": amount,
+                                         "description": (desc[:100] or "KBC")})
+            except Exception as e:
+                st.error(f"No se pudo leer el PDF: {e}")
+                return []
+            return rows
+
         if kbc_file:
-            with st.spinner("Leyendo CSV..."):
+            es_pdf = kbc_file.name.lower().endswith(".pdf")
+            with st.spinner("Leyendo PDF..." if es_pdf else "Leyendo CSV..."):
                 try:
                     from kbc_connector import auto_categorize as _kbc_cat
                 except ImportError:
                     def _kbc_cat(desc):
                         return ("gastos", "Extra")
 
-                txs_raw = _parse_kbc_csv(kbc_file)
+                txs_raw = _parse_kbc_pdf(kbc_file) if es_pdf else _parse_kbc_csv(kbc_file)
+
+            # Filtro: solo movimientos desde el mes indicado
+            desde = (kbc_desde or "").strip()
+            if desde:
+                tope = desde[:7] + "-01"
+                antes = len(txs_raw)
+                txs_raw = [t for t in txs_raw if t["date"] >= tope]
+                st.caption(f"📅 Filtrado desde {desde}: {len(txs_raw)} de {antes} movimientos.")
 
             if not txs_raw:
-                st.error("No se pudo leer el archivo. Verifica que sea el CSV de KBC (formato estándar de exportación).")
+                st.error("No se pudo leer ningún movimiento. Verifica el archivo (CSV/PDF de KBC) "
+                         "o el filtro de mes.")
             else:
                 preview_rows = []
                 for t in txs_raw:
-                    tabla_dest, cat = _kbc_cat(t["description"])
+                    # El TIPO se decide por el SIGNO del importe (KBC: '-' = gasto, '+' = ingreso).
+                    # La categoría se toma de auto_categorize según corresponda.
+                    ct, cc = _kbc_cat(t["description"])
+                    if t["amount"] > 0:
+                        tabla_dest = "ingresos"
+                        cat = cc if ct == "ingresos" else "Otros"
+                    else:
+                        tabla_dest = "gastos"
+                        cat = cc if ct == "gastos" else "Extra"
                     preview_rows.append({
                         "Fecha":       t["date"],
                         "Descripción": t["description"][:48],
@@ -2562,12 +2758,28 @@ with tab_proposito:
         col_a, col_b = st.columns(2)
         col_c, col_d = st.columns(2)
 
+        def _as_list(v):
+            """Normaliza un valor jsonb que puede venir como lista o como str JSON
+            (filas antiguas guardadas con json.dumps)."""
+            if isinstance(v, list):
+                return v
+            if isinstance(v, str):
+                v = v.strip()
+                if not v:
+                    return []
+                try:
+                    parsed = json.loads(v)
+                    return parsed if isinstance(parsed, list) else [parsed]
+                except (json.JSONDecodeError, ValueError):
+                    return [v]
+            return [v] if v else []
+
         def _render_circulo(col, emoji, titulo, color, items):
-            items = items if isinstance(items, list) else ([items] if items else [])
+            items = _as_list(items)
             with col:
                 st.markdown(
-                    f"""<div style="background:{color};border-radius:12px;padding:16px;min-height:140px;">
-                    <b style="font-size:1.05em;">{emoji} {titulo}</b><br><br>
+                    f"""<div style="background:{color};border-radius:12px;padding:16px;min-height:140px;color:#1a1a1a;">
+                    <b style="font-size:1.05em;color:#1a1a1a;">{emoji} {titulo}</b><br><br>
                     {"".join(f"• {i}<br>" for i in items)}
                     </div>""",
                     unsafe_allow_html=True,
@@ -2604,8 +2816,8 @@ with tab_proposito:
         st.divider()
 
         # ── Pasos de acción ──────────────────────────────────────
-        pasos = ik.get("pasos_accion", [])
-        if isinstance(pasos, list) and pasos:
+        pasos = _as_list(ik.get("pasos_accion", []))
+        if pasos:
             st.markdown("### 🚀 Pasos de Acción")
             for i, paso in enumerate(pasos, 1):
                 st.markdown(f"**{i}.** {paso}")
