@@ -101,7 +101,9 @@ _MUSCULO_KEYWORDS = [
     ("espalda", ["dominada", "dominadas", "jalon", "jalón", "remo", "peso muerto",
                  "pull over", "pullover", "espalda", "dorsal", "trapecio", "encogimiento"]),
     ("pecho",   ["press banca", "press de banca", "press inclinado", "press plano",
-                 "aperturas", "aperture", "pec deck", "contractor", "fondos pecho",
+                 "aperturas", "aperture", "pec deck", "peck deck", "pec fly", "peck fly",
+                 "pecfly", "peckfly", "butterfly", "contractor", "contractora",
+                 "cruce de poleas", "cruces de polea", "fondos pecho",
                  "press pecho", "pecho", "pectoral"]),
     ("biceps",  ["curl de biceps", "curl de bíceps", "curl biceps", "curl bíceps",
                  "curl martillo", "curl predicador", "curl concentrado", "curl", "biceps", "bíceps"]),
@@ -114,6 +116,22 @@ _MUSCULO_KEYWORDS = [
     ("abdomen", ["abdominal", "abdominales", "plancha", "crunch", "elevacion piernas",
                  "elevación piernas", "rueda abdominal", "abdomen", "core"]),
 ]
+
+
+_GRUPOS_VALIDOS = {"hombro", "pecho", "espalda", "biceps", "triceps", "pierna", "abdomen", "otros"}
+
+
+def normalizar_grupo(valor: str) -> str:
+    """Normaliza un grupo muscular (p.ej. el que devuelve la IA) al conjunto canónico.
+    Devuelve '' si no se reconoce."""
+    g = str(valor or "").strip().lower()
+    g = (g.replace("bíceps", "biceps").replace("tríceps", "triceps")
+           .replace("piernas", "pierna").replace("abdominales", "abdomen")
+           .replace("abdominal", "abdomen").replace("hombros", "hombro")
+           .replace("pectoral", "pecho").replace("dorsal", "espalda")
+           .replace("gluteo", "pierna").replace("glúteo", "pierna")
+           .replace("cuadriceps", "pierna").replace("femoral", "pierna").strip())
+    return g if g in _GRUPOS_VALIDOS else ""
 
 
 def clasificar_grupo_muscular(ejercicio: str) -> str:
@@ -130,10 +148,14 @@ def clasificar_grupo_muscular(ejercicio: str) -> str:
 def insert_gym_set(ejercicio, reps, peso, notas="", grupo_muscular="") -> int:
     """Inserta UNA serie de un ejercicio de gym. Si el mismo ejercicio ya tiene
     series registradas hoy, la añade como la siguiente serie.
+    El grupo muscular se decide así: primero el diccionario de palabras clave
+    (determinista); si da 'otros', se usa el grupo que aporta la IA.
     Devuelve el número de serie asignado (0 si falló)."""
     try:
         ej = str(ejercicio).strip().lower()
-        grupo = (grupo_muscular or "").strip().lower() or clasificar_grupo_muscular(ej)
+        grupo = clasificar_grupo_muscular(ej)
+        if grupo == "otros":
+            grupo = normalizar_grupo(grupo_muscular) or "otros"
         r = get_client().table("gym_ejercicios").select("serie") \
             .eq("fecha", _today()).eq("ejercicio", ej).execute()
         serie = (max((row.get("serie") or 0) for row in r.data) + 1) if r.data else 1

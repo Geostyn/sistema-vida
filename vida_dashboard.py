@@ -251,7 +251,9 @@ _MUSCULO_KEYWORDS = [
     ("Espalda", ["dominada", "dominadas", "jalon", "jalón", "remo", "peso muerto", "pull over",
                  "pullover", "espalda", "dorsal", "trapecio", "encogimiento"]),
     ("Pecho",   ["press banca", "press de banca", "press inclinado", "press plano", "aperturas",
-                 "aperture", "pec deck", "contractor", "press pecho", "pecho", "pectoral"]),
+                 "aperture", "pec deck", "peck deck", "pec fly", "peck fly", "pecfly", "peckfly",
+                 "butterfly", "contractor", "contractora", "cruce de poleas", "cruces de polea",
+                 "press pecho", "pecho", "pectoral"]),
     ("Bíceps",  ["curl de biceps", "curl de bíceps", "curl biceps", "curl bíceps", "curl martillo",
                  "curl predicador", "curl concentrado", "curl", "biceps", "bíceps"]),
     ("Tríceps", ["fondos", "extension triceps", "extensión tríceps", "press frances", "press francés",
@@ -499,8 +501,23 @@ with tab2:
         df_gym["reps"] = pd.to_numeric(df_gym.get("reps"), errors="coerce").fillna(0).astype(int)
         df_gym["peso"] = pd.to_numeric(df_gym.get("peso"), errors="coerce").fillna(0.0)
         df_gym["volumen"] = df_gym["reps"] * df_gym["peso"]
-        # Grupo muscular: se deriva del nombre del ejercicio (consistente y cubre filas antiguas)
-        df_gym["grupo"] = df_gym["ejercicio"].apply(clasificar_musculo)
+        # Grupo muscular — precedencia:
+        #   1) el grupo guardado en grupo_muscular si es específico (tu edición manual o la IA),
+        #   2) si está vacío/'otros', el diccionario de palabras clave,
+        #   3) 'Otros' como último recurso.
+        _GRP_CANON = {"hombro": "Hombro", "pecho": "Pecho", "espalda": "Espalda",
+                      "biceps": "Bíceps", "bíceps": "Bíceps", "triceps": "Tríceps",
+                      "tríceps": "Tríceps", "pierna": "Pierna", "abdomen": "Abdomen"}
+
+        def _grupo_final(row):
+            stored = _GRP_CANON.get(str(row.get("grupo_muscular") or "").strip().lower())
+            if stored:                       # guardado y específico → manda
+                return stored
+            return clasificar_musculo(row["ejercicio"])
+
+        if "grupo_muscular" not in df_gym.columns:
+            df_gym["grupo_muscular"] = ""
+        df_gym["grupo"] = df_gym.apply(_grupo_final, axis=1)
 
         fechas_gym = sorted(df_gym["fecha"].unique(), reverse=True)
         gym_mes = df_gym[df_gym["fecha"] >= MONTH_START]
@@ -602,8 +619,14 @@ with tab2:
                     st.markdown("&nbsp;&nbsp;" + "  ·  ".join(series_txt))
                 st.caption(f"Volumen del día: **{vol:,.0f} kg** (reps × peso de todas las series)")
 
-        # ── Editor de series de gym (corregir reps/peso/ejercicio o borrar) ──
+        # ── Editor de series de gym (corregir grupo/reps/peso/ejercicio o borrar) ──
+        GRUPOS_OPC = ["Hombro", "Pecho", "Espalda", "Bíceps", "Tríceps", "Pierna", "Abdomen", "Otros"]
+        _GRP_STORE = {"Hombro": "hombro", "Pecho": "pecho", "Espalda": "espalda",
+                      "Bíceps": "biceps", "Tríceps": "triceps", "Pierna": "pierna",
+                      "Abdomen": "abdomen", "Otros": "otros"}
         with st.expander("✏️ Editar / borrar series registradas"):
+            st.caption("Puedes cambiar el **grupo** muscular en el desplegable; tu elección "
+                       "manual se guarda y manda sobre la clasificación automática.")
             df_edit_gym = df_gym.sort_values("created_at", ascending=False)[
                 ["id", "fecha", "grupo", "ejercicio", "serie", "reps", "peso"]].head(60).copy()
             df_edit_gym.insert(0, "🗑️", False)
@@ -614,7 +637,7 @@ with tab2:
                     "🗑️":        st.column_config.CheckboxColumn("🗑️", width="small"),
                     "id":         st.column_config.TextColumn("ID", disabled=True, width="small"),
                     "fecha":      st.column_config.TextColumn("Fecha", width="small"),
-                    "grupo":      st.column_config.TextColumn("Grupo", disabled=True, width="small"),
+                    "grupo":      st.column_config.SelectboxColumn("Grupo", options=GRUPOS_OPC, width="small"),
                     "ejercicio":  st.column_config.TextColumn("Ejercicio"),
                     "serie":      st.column_config.NumberColumn("Serie", width="small"),
                     "reps":       st.column_config.NumberColumn("Reps", width="small"),
@@ -627,7 +650,7 @@ with tab2:
                         "ejercicio": str(r["ejercicio"]).strip().lower(),
                         "serie": int(r["serie"]), "reps": int(r["reps"]),
                         "peso": float(r["peso"]),
-                        "grupo_muscular": clasificar_musculo(r["ejercicio"]).lower(),
+                        "grupo_muscular": _GRP_STORE.get(r["grupo"], "otros"),
                     }) for _, r in edited_gym[~edited_gym["🗑️"]].iterrows())
                     st.success(f"✅ {saved} series guardadas")
                     st.rerun()

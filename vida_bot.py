@@ -426,7 +426,7 @@ FORMATO DE RESPUESTA: Devuelve SIEMPRE un JSON válido con EXACTAMENTE esta estr
 {
   "updates": {
     "deporte": {"actividad": "", "duracion": "", "distancia": "", "sensacion": "😊", "notas": ""},
-    "gym": [{"ejercicio": "", "reps": 0, "peso": 0}],
+    "gym": [{"ejercicio": "", "reps": 0, "peso": 0, "grupo": ""}],
     "alimentacion": {"desayuno": "", "comida": "", "cena": "", "snacks": "", "kcal": "", "prot": "", "carbs": "", "grasas": "", "agua": "", "energia": "😊"},
     "lexico": [{"palabra": "", "definicion": "", "ejemplo": ""}],
     "refranes": [{"refran": "", "significado": "", "contexto": ""}],
@@ -453,6 +453,7 @@ REGLAS IMPORTANTES:
   · "ejercicio": nombre estándar en minúsculas y singular (ej: "curl de bíceps", "press de banca", "sentadilla", "peso muerto", "remo con barra", "press militar", "dominadas", "fondos")
   · "reps": número entero de repeticiones (0 si no lo dice)
   · "peso": número en kg (0 si es peso corporal o no lo dice)
+  · "grupo": grupo muscular principal, EXACTAMENTE uno de: hombro, pecho, espalda, biceps, triceps, pierna, abdomen (ej: "pec fly"/"aperturas"=pecho, "curl"=biceps, "press militar"=hombro)
   · NO rellenes "deporte" cuando uses "gym" — el sistema registra el día de gym automáticamente
   · El sistema cuenta las series solo: si el usuario repite el mismo ejercicio el mismo día, se guarda como la siguiente serie
 - "deporte": para actividades generales (correr, bici, fútbol, caminar...) o cuando dice "fui al gym" SIN dictar ejercicios concretos
@@ -620,7 +621,8 @@ def apply_updates(updates: dict) -> tuple[list[str], list[str]]:
         ejercicio = str(g.get("ejercicio", "")).strip()
         if not ejercicio:
             continue
-        serie = sb.insert_gym_set(ejercicio, g.get("reps"), g.get("peso")) if IS_CLOUD else 0
+        serie = sb.insert_gym_set(ejercicio, g.get("reps"), g.get("peso"),
+                                  grupo_muscular=g.get("grupo", "")) if IS_CLOUD else 0
         if serie:
             gym_guardado = True
             detalle = f"Serie {serie}"
@@ -874,8 +876,11 @@ def _extract_gym_sets(text: str) -> list:
         prompt = (
             "Extrae los ejercicios de gimnasio de este mensaje. "
             "Devuelve SOLO un JSON válido con esta forma exacta:\n"
-            '{"sets":[{"ejercicio":"nombre estándar en minúsculas singular","reps":0,"peso":0}]}\n'
+            '{"sets":[{"ejercicio":"nombre estándar en minúsculas singular","reps":0,"peso":0,"grupo":"pecho"}]}\n'
             "Reglas: reps es entero; peso en kg numérico (0 si es peso corporal o no se indica). "
+            "El campo \"grupo\" es el grupo muscular principal del ejercicio y debe ser EXACTAMENTE uno de: "
+            "hombro, pecho, espalda, biceps, triceps, pierna, abdomen. "
+            "(Ej: 'pec fly' o 'aperturas' = pecho; 'curl' = biceps; 'press militar' = hombro). "
             "Un objeto por cada serie o ejercicio mencionado. "
             'Si el mensaje no contiene ningún ejercicio concreto, devuelve {"sets":[]}.\n\n'
             f"Mensaje: {text}"
@@ -1036,8 +1041,10 @@ def _handle_gym_session_step(text: str) -> bool:
         if IS_CLOUD:
             try:
                 import supabase_client as sb
-                grupo = sb.clasificar_grupo_muscular(ejercicio)
-                serie = sb.insert_gym_set(ejercicio, s.get("reps"), s.get("peso"), grupo_muscular=grupo)
+                # La IA aporta el grupo; insert_gym_set prioriza el diccionario y
+                # usa el de la IA solo si el ejercicio no está en el diccionario.
+                serie = sb.insert_gym_set(ejercicio, s.get("reps"), s.get("peso"),
+                                          grupo_muscular=s.get("grupo", ""))
                 if serie and not sb.deporte_hoy_tiene("gym"):
                     sb.insert_deporte("Gym", "", "", "💪", "Día de gym (sesión entrenador)")
             except Exception as e:
