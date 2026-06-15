@@ -311,3 +311,58 @@ create table if not exists conversaciones (
 );
 create index if not exists idx_conv_chat_fecha on conversaciones (chat_id, created_at desc);
 alter table conversaciones disable row level security;
+
+
+-- ════════════════════════════════════════════════════════════════
+-- MIGRACIÓN 2026-06: módulo Descanso/Sueño + control de luces Tuya
+-- Idempotente: se puede ejecutar varias veces sin error.
+-- ════════════════════════════════════════════════════════════════
+
+-- 20. Configuración del módulo de sueño (singleton id=1)
+--     Horas en formato local (Europe/Brussels). color_despertar = hex (#ffaa55).
+--     brillo_* en 0-100 (la web usa %, tuya_luces lo escala a 10-1000).
+create table if not exists sueno_config (
+  id               integer primary key default 1,
+  hora_despertar   time default '07:00',
+  hora_luz_roja    time default '22:30',
+  hora_apagado     time default '23:30',
+  brillo_despertar int  default 80,
+  color_despertar  text default '#ffb86c',
+  brillo_noche     int  default 15,
+  musica_despertar boolean default true,
+  latencia_min     int  default 15,
+  activo           boolean default true,
+  updated_at       timestamptz default now()
+);
+insert into sueno_config (id) values (1) on conflict (id) do nothing;
+alter table sueno_config disable row level security;
+
+-- 21. Cola de órdenes manuales de luces (la web inserta, el bot ejecuta y marca 'hecho')
+--     luz: dormitorio | escritorio | ambas
+--     accion: on | off | color | brillo
+--     valor: hex para color, 0-100 para brillo, vacío para on/off
+create table if not exists luces_comando (
+  id         bigserial primary key,
+  luz        text not null,
+  accion     text not null,
+  valor      text default '',
+  estado     text default 'pendiente',  -- pendiente | hecho | error
+  created_at timestamptz default now()
+);
+create index if not exists idx_luces_comando_estado on luces_comando (estado, created_at);
+alter table luces_comando disable row level security;
+
+-- 22. Registro histórico de noches de sueño
+create table if not exists sueno_registros (
+  id             bigserial primary key,
+  fecha          date not null default current_date,
+  hora_dormir    time,
+  hora_despertar time,
+  horas          numeric,
+  ciclos         int,
+  calidad        int,      -- 1-5
+  notas          text default '',
+  created_at     timestamptz default now()
+);
+create index if not exists idx_sueno_registros_fecha on sueno_registros (fecha desc);
+alter table sueno_registros disable row level security;

@@ -711,3 +711,54 @@ def limpiar_historial_chat(chat_id: str, conservar: int = 40) -> None:
             get_client().table("conversaciones").delete().in_("id", ids).execute()
     except Exception as e:
         logger.error(f"Supabase limpiar_historial_chat: {e}")
+
+
+# ── Módulo Descanso/Sueño ────────────────────────────────────
+
+def get_sueno_config() -> dict:
+    """Configuración del módulo de sueño (fila singleton id=1)."""
+    try:
+        r = get_client().table("sueno_config").select("*").eq("id", 1).limit(1).execute()
+        return (r.data or [{}])[0]
+    except Exception as e:
+        logger.error(f"Supabase get_sueno_config: {e}")
+        return {}
+
+
+def get_comandos_pendientes() -> list:
+    """Órdenes de luces pendientes de ejecutar (más antiguas primero)."""
+    try:
+        r = get_client().table("luces_comando").select("*") \
+            .eq("estado", "pendiente").order("created_at", desc=False).limit(50).execute()
+        return r.data or []
+    except Exception as e:
+        logger.error(f"Supabase get_comandos_pendientes: {e}")
+        return []
+
+
+def marcar_comando(comando_id, estado: str = "hecho") -> None:
+    """Marca una orden de luz como hecha/error."""
+    try:
+        get_client().table("luces_comando").update({"estado": estado}) \
+            .eq("id", int(comando_id)).execute()
+    except Exception as e:
+        logger.error(f"Supabase marcar_comando: {e}")
+
+
+def insert_sueno_registro(hora_dormir, hora_despertar, horas, ciclos,
+                          calidad=None, notas="") -> bool:
+    """Registra una noche de sueño (usado opcionalmente desde el bot)."""
+    try:
+        get_client().table("sueno_registros").insert({
+            "fecha": _today(),
+            "hora_dormir": hora_dormir,
+            "hora_despertar": hora_despertar,
+            "horas": horas,
+            "ciclos": ciclos,
+            "calidad": calidad,
+            "notas": notas,
+        }).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase insert_sueno_registro: {e}")
+        return False

@@ -2369,6 +2369,72 @@ def _make_flask_app():
     return flask_app
 
 
+# ── Módulo Descanso/Sueño: disparadores de luces + poller de órdenes ──
+_sueno_last_fired = {}   # {'despertar': '2026-06-15', ...} dedup diario
+
+
+def _hhmm(val) -> str:
+    """Normaliza un 'time' de Supabase ('HH:MM' o 'HH:MM:SS') a 'HH:MM'."""
+    return str(val or "")[:5]
+
+
+def check_sueno_triggers():
+    """Cada minuto: compara la hora local con sueno_config y dispara la escena.
+    Las horas son editables desde la web, por eso se evalúan dinámicamente
+    (no con schedule.at fijo). Dedup diario para no repetir el disparo."""
+    try:
+        import tuya_luces
+        from supabase_client import get_sueno_config
+    except Exception as e:
+        logger.error(f"sueno triggers import: {e}")
+        return
+    if not tuya_luces.disponible():
+        return
+    cfg = get_sueno_config()
+    if not cfg or not cfg.get("activo", True):
+        return
+
+    ahora = datetime.now()
+    hoy = ahora.strftime("%Y-%m-%d")
+    actual = ahora.strftime("%H:%M")
+
+    plan = [
+        ("despertar",  _hhmm(cfg.get("hora_despertar")), tuya_luces.escena_despertar),
+        ("luz_roja",   _hhmm(cfg.get("hora_luz_roja")),  tuya_luces.escena_melatonina),
+        ("apagado",    _hhmm(cfg.get("hora_apagado")),   tuya_luces.escena_apagar),
+    ]
+    for nombre, hora, accion in plan:
+        if hora and hora == actual and _sueno_last_fired.get(nombre) != hoy:
+            _sueno_last_fired[nombre] = hoy
+            try:
+                accion()
+            except Exception as e:
+                logger.error(f"sueno trigger '{nombre}': {e}")
+
+
+def _luces_poller_loop():
+    """Hilo dedicado: ejecuta las órdenes manuales de la web cada 15 s."""
+    try:
+        import tuya_luces
+        from supabase_client import get_comandos_pendientes, marcar_comando
+    except Exception as e:
+        logger.error(f"luces poller import: {e}")
+        return
+    if not tuya_luces.disponible():
+        logger.info("Tuya no configurado → poller de luces inactivo.")
+        return
+    logger.info("💡 Poller de luces activo (cada 15 s).")
+    while True:
+        try:
+            for cmd in get_comandos_pendientes():
+                ok = tuya_luces.ejecutar_comando(
+                    cmd.get("luz", ""), cmd.get("accion", ""), cmd.get("valor", ""))
+                marcar_comando(cmd["id"], "hecho" if ok else "error")
+        except Exception as e:
+            logger.error(f"luces poller error: {e}")
+        time.sleep(15)
+
+
 def _schedule_loop():
     while True:
         try:
@@ -2401,8 +2467,18 @@ def main():
     schedule.every().day.at(DATO_MAÑANA).do(send_dato_curioso, slot="mañana")
     schedule.every().day.at(DATO_TARDE).do(send_dato_curioso, slot="tarde")
     schedule.every().day.at(DATO_NOCHE).do(send_dato_curioso, slot="noche")
+    # Módulo Descanso: revisa horarios de luces cada minuto (horas editables desde la web)
+    schedule.every().minute.do(check_sueno_triggers)
 
     import threading
+
+    # Poller de órdenes manuales de luces (web → Tuya), independiente del scheduler de 60 s
+    try:
+        import tuya_luces
+        if tuya_luces.disponible():
+            threading.Thread(target=_luces_poller_loop, daemon=True).start()
+    except Exception as e:
+        logger.error(f"No se pudo iniciar el poller de luces: {e}")
 
     def _background_init():
         """Configura webhook o inicia polling según APP_URL. Siempre en background."""
