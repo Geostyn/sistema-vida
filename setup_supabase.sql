@@ -366,3 +366,27 @@ create table if not exists sueno_registros (
 );
 create index if not exists idx_sueno_registros_fecha on sueno_registros (fecha desc);
 alter table sueno_registros disable row level security;
+
+
+-- ════════════════════════════════════════════════════════════════
+-- MIGRACIÓN 2026-06: seguridad para la PWA (RLS + policy uniforme)
+-- ════════════════════════════════════════════════════════════════
+-- La PWA corre en el navegador y usa la ANON key, así que NO puede llevar
+-- la service_role key. Activamos RLS en TODAS las tablas y damos acceso solo
+-- a usuarios logueados (rol 'authenticated' = tú tras el login).
+--   · service_role (bot Render + Streamlit) BYPASSA RLS → siguen funcionando igual.
+--   · anon (sin login) → sin política → acceso denegado (seguro).
+--   · authenticated (login PWA) → acceso total vía la policy 'app_rw'.
+-- Idempotente: se puede ejecutar varias veces.
+do $$
+declare t text;
+begin
+  for t in
+    select tablename from pg_tables where schemaname = 'public'
+  loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists app_rw on public.%I', t);
+    execute format(
+      'create policy app_rw on public.%I for all to authenticated using (true) with check (true)', t);
+  end loop;
+end $$;

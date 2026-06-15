@@ -2316,10 +2316,104 @@ def transcribe_voice(file_id: str) -> str:
 # ── Webhook Flask (modo cloud / Render) ───────────────────────
 _processed_msg_ids: set = set()
 
+# ── Soporte para la PWA (API REST con IA) ─────────────────────
+def _chat_answer(text: str) -> str:
+    """Versión para la PWA: devuelve la respuesta del asistente como texto plano."""
+    context = ""
+    if IS_CLOUD:
+        try:
+            from supabase_client import get_vida_state_summary
+            context = get_vida_state_summary()
+        except Exception:
+            context = ""
+    system_prompt = (
+        f"Eres el asistente personal de {PLAYER_NAME}, experto en su Sistema de Vida y su entrenador.\n"
+        f"Estado actual del sistema:\n{context}\n\n"
+        "Responde en español, de forma directa y útil, recordando los mensajes anteriores. "
+        "Si da consejos de salud/fitness, fundamenta con evidencia. Sé amigable y motivador. "
+        "Texto plano (sin etiquetas HTML)."
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    for h in _load_chat_history():
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"][:1500]})
+    messages.append({"role": "user", "content": text})
+    from groq import Groq
+    client = Groq(api_key=GROQ_API_KEY)
+    resp = client.chat.completions.create(
+        model=GROQ_MODEL, messages=messages, max_tokens=600, temperature=0.7,
+    )
+    answer = resp.choices[0].message.content.strip()
+    try:
+        _save_chat_turn(text, answer)
+    except Exception:
+        pass
+    return answer
+
+
+def _verificar_jwt(req) -> bool:
+    """Valida el JWT de Supabase (header Authorization) contra Supabase Auth."""
+    token = req.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    if not token or not SUPABASE_URL:
+        return False
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_KEY},
+            verify=SSL_VERIFY, timeout=10,
+        )
+        return r.status_code == 200
+    except Exception as e:
+        logger.error(f"_verificar_jwt: {e}")
+        return False
+
+
 def _make_flask_app():
     import threading
     from flask import Flask, request, jsonify
     flask_app = Flask(__name__)
+
+    @flask_app.after_request
+    def _cors(resp):
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, apikey"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return resp
+
+    @flask_app.route("/api/chat", methods=["POST", "OPTIONS"])
+    def api_chat():
+        if request.method == "OPTIONS":
+            return ("", 204)
+        if not _verificar_jwt(request):
+            return jsonify({"error": "no autorizado"}), 401
+        data = request.get_json(force=True, silent=True) or {}
+        mensaje = (data.get("mensaje") or "").strip()
+        if not mensaje:
+            return jsonify({"error": "mensaje vacío"}), 400
+        try:
+            return jsonify({"respuesta": _chat_answer(mensaje)})
+        except Exception as e:
+            logger.error(f"api_chat: {e}")
+            return jsonify({"error": "error generando respuesta"}), 500
+
+    @flask_app.route("/api/mejoras/generar", methods=["POST", "OPTIONS"])
+    def api_mejoras():
+        if request.method == "OPTIONS":
+            return ("", 204)
+        if not _verificar_jwt(request):
+            return jsonify({"error": "no autorizado"}), 401
+        try:
+            mejora = _generate_mejora_ai()
+            if not mejora:
+                return jsonify({"error": "no se pudo generar"}), 500
+            if IS_CLOUD:
+                from supabase_client import insert_mejora
+                insert_mejora(mejora["nombre"], mejora.get("categoria", "enfoque"),
+                              mejora.get("descripcion", ""), mejora.get("evidencia", ""))
+            return jsonify({"ok": True, "mejora": mejora})
+        except Exception as e:
+            logger.error(f"api_mejoras: {e}")
+            return jsonify({"error": "error generando mejora"}), 500
 
     @flask_app.route("/webhook", methods=["POST"])
     def webhook():
