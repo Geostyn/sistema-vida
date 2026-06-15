@@ -3001,58 +3001,90 @@ def _depth_color(min_desde_inicio):
         return "#9775fa"   # REM (violeta)
 
 
-def _reloj_sueno(dormir_dt, despertar_dt, latencia):
-    """Reloj polar de 24h con la ventana de sueño coloreada por fases."""
-    # Normaliza despertar después de dormir
-    if despertar_dt <= dormir_dt:
-        despertar_dt = despertar_dt + timedelta(days=1)
-    inicio_sueno = dormir_dt + timedelta(minutes=latencia)
-    total_min = (despertar_dt - dormir_dt).total_seconds() / 60
+def _min_hhmm(m) -> str:
+    """Minutos desde medianoche → 'HH:MM'."""
+    m = int(round(m)) % 1440
+    return f"{m // 60:02d}:{m % 60:02d}"
 
-    thetas, radios, colores, hover = [], [], [], []
-    paso = 15  # min por sector
-    for i in range(int(24 * 60 / paso)):
-        slot_centro = i * paso + paso / 2          # minutos desde 00:00
-        hora_frac = slot_centro / 60.0
-        theta = hora_frac / 24.0 * 360.0
-        # ¿este slot cae dentro de la ventana de sueño? (probamos hoy y +1 día)
-        en_sueno = False
-        min_rel = None
-        for off in (0, 1440):
-            t = datetime.combine(date.today(), datetime.min.time()) + timedelta(minutes=slot_centro + off)
-            if dormir_dt <= t < despertar_dt:
-                en_sueno = True
-                min_rel = (t - inicio_sueno).total_seconds() / 60
-                break
-        thetas.append(theta)
-        if en_sueno:
-            radios.append(1.0)
-            if min_rel is not None and min_rel < 0:
-                colores.append("#ffd43b")   # latencia (aún despierto, amarillo)
-            else:
-                colores.append(_depth_color(min_rel or 0))
-            hh = int(slot_centro // 60) % 24
-            mm = int(slot_centro % 60)
-            hover.append(f"{hh:02d}:{mm:02d} · durmiendo")
+
+def _metricas_sueno(bed_min, wake_min, latencia):
+    """Devuelve dict con horas dormidas, ciclos y la hora de despertar óptima."""
+    wake_eff = wake_min + (1440 if wake_min <= bed_min else 0)
+    inicio = bed_min + latencia
+    dormido = wake_eff - inicio                 # min realmente dormido
+    ciclos = dormido / CICLO_MIN
+    ciclos_red = max(1, round(ciclos))
+    wake_opt = (inicio + ciclos_red * CICLO_MIN) % 1440
+    desfase = abs(wake_eff - (inicio + ciclos_red * CICLO_MIN))  # min hasta cierre de ciclo
+    return {
+        "wake_eff": wake_eff, "inicio": inicio, "dormido": dormido,
+        "horas": dormido / 60, "ciclos": ciclos, "ciclos_red": ciclos_red,
+        "wake_opt": wake_opt, "desfase": desfase, "en_ciclo": desfase <= 12,
+    }
+
+
+def _reloj_interactivo(bed_min, wake_min, latencia):
+    """Reloj de 24h: aro de sueño por fases + manijas 🛏️/☀️ + aro tocable."""
+    wake_eff = wake_min + (1440 if wake_min <= bed_min else 0)
+    inicio = bed_min + latencia
+    paso = 5
+
+    thetas, radios, colores = [], [], []
+    for i in range(0, 1440, paso):
+        c = i + paso / 2
+        thetas.append(c / 1440 * 360)
+        radios.append(1.0)
+        cc = c if c >= bed_min else c + 1440
+        en = bed_min <= cc < wake_eff
+        if en:
+            rel = cc - inicio
+            colores.append("#ffd43b" if rel < 0 else _depth_color(rel))
         else:
-            radios.append(0.28)
-            colores.append("#262b40")
-            hover.append("")
+            colores.append("#20263c")
 
-    fig = go.Figure(go.Barpolar(
-        r=radios, theta=thetas, width=[paso / 60 / 24 * 360] * len(thetas),
-        marker_color=colores, marker_line_width=0, hovertext=hover, hoverinfo="text",
+    fig = go.Figure()
+    # Aro de sueño coloreado por fases
+    fig.add_trace(go.Barpolar(
+        r=radios, theta=thetas, width=[paso / 1440 * 360] * len(thetas),
+        marker_color=colores, marker_line_width=0, hoverinfo="skip", showlegend=False,
     ))
-    fig.update_layout(
-        height=360, margin=dict(t=30, b=10, l=10, r=10),
-        paper_bgcolor="rgba(0,0,0,0)",
+    # Aro tocable (casi invisible): cada toque devuelve el minuto
+    clt = list(range(0, 1440, paso))
+    fig.add_trace(go.Scatterpolar(
+        r=[1.0] * len(clt), theta=[m / 1440 * 360 for m in clt],
+        mode="markers", marker=dict(size=24, color="rgba(255,255,255,0.04)"),
+        customdata=[[m, _min_hhmm(m)] for m in clt],
+        hovertemplate="%{customdata[1]}<extra></extra>",
         showlegend=False,
+    ))
+    # Manijas
+    fig.add_trace(go.Scatterpolar(
+        r=[1.0], theta=[bed_min / 1440 * 360], mode="markers+text",
+        marker=dict(size=34, color="#161a28", line=dict(color="#ffb86c", width=3)),
+        text=["🛏️"], textfont=dict(size=17), hoverinfo="skip", showlegend=False,
+    ))
+    fig.add_trace(go.Scatterpolar(
+        r=[1.0], theta=[(wake_eff % 1440) / 1440 * 360], mode="markers+text",
+        marker=dict(size=34, color="#161a28", line=dict(color="#ffd43b", width=3)),
+        text=["☀️"], textfont=dict(size=17), hoverinfo="skip", showlegend=False,
+    ))
+    # Texto central
+    horas = (wake_eff - inicio) / 60
+    ciclos = (wake_eff - inicio) / CICLO_MIN
+    fig.add_annotation(
+        x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False, align="center",
+        text=(f"<span style='font-size:30px'><b>{horas:.1f} h</b></span><br>"
+              f"<span style='font-size:14px;color:#9aa0b5'>{ciclos:.1f} ciclos</span>"),
+        font=dict(color="#e6e6e6"),
+    )
+    fig.update_layout(
+        height=440, margin=dict(t=24, b=24, l=24, r=24),
+        paper_bgcolor="rgba(0,0,0,0)", showlegend=False, dragmode=False,
         polar=dict(
             bgcolor="rgba(0,0,0,0)",
-            radialaxis=dict(visible=False, range=[0, 1.05]),
+            radialaxis=dict(visible=False, range=[0, 1.18]),
             angularaxis=dict(
-                rotation=90, direction="clockwise",
-                tickmode="array",
+                rotation=90, direction="clockwise", tickmode="array",
                 tickvals=[h / 24 * 360 for h in range(0, 24, 3)],
                 ticktext=[f"{h:02d}h" for h in range(0, 24, 3)],
                 tickfont=dict(color="#9aa0b5", size=11),
@@ -3074,49 +3106,105 @@ with tab_descanso:
     cfg = _cfg_rows[0] if _cfg_rows else {}
     latencia = int(cfg.get("latencia_min", 15) or 15)
 
-    # ── 1. CALCULADOR DE CICLOS ────────────────────────────────
+    # ── 1. CALCULADOR DE CICLOS (reloj interactivo) ────────────
     st.markdown("### 🌙 Calculador de ciclos")
-    modo = st.radio(
-        "¿Qué quieres calcular?",
-        ["Quiero despertarme a una hora", "Me voy a acostar a una hora"],
-        horizontal=True, key="sueno_modo",
-    )
+    st.caption("Elige qué manija ajustar y **toca el aro del reloj** para moverla. "
+               "Todo se recalcula al instante.")
 
-    col_in, col_clk = st.columns([1, 1])
-    with col_in:
-        if modo == "Quiero despertarme a una hora":
-            wake = st.time_input("⏰ Hora de despertar", _parse_hhmm(cfg.get("hora_despertar"), "07:00"),
-                                 key="sueno_wake_in", step=300)
-            opciones = _calcular_horas(wake, [6, 5, 4], latencia, hacia_atras=True)
-            st.markdown("**Deberías acostarte a las:**")
-            for n, hstr, _dt in opciones:
-                horas = round((n * CICLO_MIN) / 60, 1)
-                reco = " · ⭐ recomendado" if n in (5, 6) else ""
-                badge = "🟢" if n in (5, 6) else "🟡"
-                st.markdown(f"{badge} **{hstr}** — {n} ciclos · {horas} h de sueño{reco}")
-            st.caption(f"Incluye ~{latencia} min en quedarte dormido.")
-            dormir_dt = opciones[1][2]   # 5 ciclos como referencia del reloj
-            despertar_dt = datetime.combine(date.today(), wake)
-            _ciclos_ref = 5
-        else:
-            bed = st.time_input("🛏️ Hora de acostarte", _parse_hhmm(cfg.get("hora_luz_roja"), "23:00"),
-                                key="sueno_bed_in", step=300)
-            opciones = _calcular_horas(bed, [4, 5, 6], latencia, hacia_atras=False)
-            st.markdown("**Pon el despertador a las:**")
-            for n, hstr, _dt in opciones:
-                horas = round((n * CICLO_MIN) / 60, 1)
-                reco = " · ⭐ recomendado" if n in (5, 6) else ""
-                badge = "🟢" if n in (5, 6) else "🟡"
-                st.markdown(f"{badge} **{hstr}** — {n} ciclos · {horas} h de sueño{reco}")
-            st.caption(f"Incluye ~{latencia} min en quedarte dormido.")
-            dormir_dt = datetime.combine(date.today(), bed)
-            despertar_dt = opciones[1][2]   # 5 ciclos
-            _ciclos_ref = 5
+    # Estado inicial (minutos desde medianoche) desde la config guardada
+    if "slp_bed" not in st.session_state:
+        _b = _parse_hhmm(cfg.get("hora_luz_roja"), "23:00")
+        st.session_state.slp_bed = _b.hour * 60 + _b.minute
+    if "slp_wake" not in st.session_state:
+        _w = _parse_hhmm(cfg.get("hora_despertar"), "07:00")
+        st.session_state.slp_wake = _w.hour * 60 + _w.minute
+
+    activo = st.radio("Ajustar en el reloj:", ["☀️ Despertar", "🛏️ Dormir"],
+                      horizontal=True, key="slp_activo")
+    handle = "wake" if activo.startswith("☀️") else "bed"
+
+    # Procesa el último toque del reloj (guardado en session_state por on_select).
+    # Dedup por firma: solo aplica si el toque es NUEVO (evita re-aplicar al cambiar de manija).
+    _sel = st.session_state.get("slp_clock")
+    _points = None
+    if isinstance(_sel, dict):
+        _points = _sel.get("selection", {}).get("points")
+    elif _sel is not None:
+        try:
+            _points = _sel.selection.points
+        except Exception:
+            _points = None
+    _sig = json.dumps(_points, sort_keys=True, default=str) if _points else ""
+    if _sig and _sig != st.session_state.get("slp_sig"):
+        st.session_state.slp_sig = _sig
+        _min = None
+        for _p in _points:
+            _cd = _p.get("customdata") if isinstance(_p, dict) else getattr(_p, "customdata", None)
+            if _cd:
+                try:
+                    _min = int(_cd[0]); break
+                except (ValueError, TypeError, IndexError):
+                    pass
+        if _min is not None:
+            _min = int(round(_min / 5) * 5) % 1440
+            st.session_state["slp_wake" if handle == "wake" else "slp_bed"] = _min
+
+    col_clk, col_info = st.columns([1.15, 1])
 
     with col_clk:
-        st.plotly_chart(_reloj_sueno(dormir_dt, despertar_dt, latencia), use_container_width=True)
-        leyenda = ("🟡 Latencia · 🔵 Profundo · 🔷 Ligero · 🟣 REM")
-        st.caption(leyenda)
+        st.plotly_chart(
+            _reloj_interactivo(st.session_state.slp_bed, st.session_state.slp_wake, latencia),
+            use_container_width=True, key="slp_clock",
+            on_select="rerun", selection_mode="points",
+        )
+        st.caption("🟡 Conciliar sueño · 🔵 Profundo · 🔷 Ligero · 🟣 REM")
+
+    with col_info:
+        met = _metricas_sueno(st.session_state.slp_bed, st.session_state.slp_wake, latencia)
+
+        # Ajuste fino con botones (±15 min) de la manija activa
+        st.markdown(f"**Ajuste fino — {'☀️ Despertar' if handle=='wake' else '🛏️ Dormir'}**")
+        _key = "slp_wake" if handle == "wake" else "slp_bed"
+        b1, b2, b3 = st.columns([1, 1.3, 1])
+        if b1.button("−15", key="slp_minus", use_container_width=True):
+            st.session_state[_key] = (st.session_state[_key] - 15) % 1440
+            st.rerun()
+        b2.markdown(f"<div style='text-align:center;font-size:24px;font-weight:700'>"
+                    f"{_min_hhmm(st.session_state[_key])}</div>", unsafe_allow_html=True)
+        if b3.button("+15", key="slp_plus", use_container_width=True):
+            st.session_state[_key] = (st.session_state[_key] + 15) % 1440
+            st.rerun()
+
+        m1, m2 = st.columns(2)
+        m1.metric("🛏️ Dormir", _min_hhmm(st.session_state.slp_bed))
+        m2.metric("☀️ Despertar", _min_hhmm(st.session_state.slp_wake))
+        m3, m4 = st.columns(2)
+        m3.metric("Tiempo dormido", f"{met['horas']:.1f} h")
+        m4.metric("Ciclos", f"{met['ciclos']:.1f}")
+
+        if met["en_ciclo"]:
+            st.success(f"✅ Despertar óptimo: terminas el ciclo {met['ciclos_red']}.")
+        else:
+            st.warning(
+                f"⚠️ Despertarías a mitad de ciclo. Ajusta el despertar a "
+                f"**{_min_hhmm(met['wake_opt'])}** para cerrar {met['ciclos_red']} ciclos "
+                f"({met['ciclos_red']*1.5:.1f} h)."
+            )
+            if st.button(f"☀️ Usar {_min_hhmm(met['wake_opt'])}", key="slp_opt",
+                         use_container_width=True):
+                st.session_state.slp_wake = met["wake_opt"]
+                st.rerun()
+
+        if st.button("💾 Guardar como mi horario", key="slp_save", use_container_width=True,
+                     type="primary"):
+            ok = sb_upsert("sueno_config", {
+                "id": 1,
+                "hora_despertar": _min_hhmm(st.session_state.slp_wake),
+                "hora_luz_roja": _min_hhmm(st.session_state.slp_bed),
+                "updated_at": datetime.now().isoformat(),
+            }, on_conflict="id")
+            if ok:
+                st.toast("Horario guardado: el bot lo usará para las luces.", icon="💾")
 
     st.divider()
 
