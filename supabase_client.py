@@ -5,6 +5,7 @@ Usado por vida_bot.py cuando corre en Fly.io (IS_CLOUD=True).
 import os
 import json
 import logging
+import unicodedata
 from datetime import date
 
 logger = logging.getLogger("vida_bot")
@@ -91,6 +92,22 @@ def _peso_num(v):
         return None
 
 
+# Palabras vacías que no aportan a la identidad del ejercicio.
+_FILLERS_EJ = {"de", "del", "la", "el", "los", "las", "con", "en", "a", "al",
+               "y", "para", "por", "un", "una", "unos", "unas"}
+
+
+def _norm_ejercicio(s: str) -> str:
+    """Normaliza el nombre de un ejercicio para que las variantes se unifiquen.
+    Quita acentos, baja a minúsculas y elimina relleno: 'Curl de Bíceps',
+    'curl biceps' y 'Curl Bíceps' → 'curl biceps'. (Espejo de normKey() en la web.)"""
+    s = unicodedata.normalize("NFD", str(s or "").lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    limpio = "".join(ch if ch.isalnum() else " " for ch in s)
+    tokens = [t for t in limpio.split() if t and t not in _FILLERS_EJ]
+    return " ".join(tokens).strip()
+
+
 # ── Clasificación por grupo muscular ─────────────────────────
 # Palabra clave (en el nombre del ejercicio) → grupo muscular.
 # El orden importa: se evalúa por coincidencia de subcadena.
@@ -152,7 +169,7 @@ def insert_gym_set(ejercicio, reps, peso, notas="", grupo_muscular="") -> int:
     (determinista); si da 'otros', se usa el grupo que aporta la IA.
     Devuelve el número de serie asignado (0 si falló)."""
     try:
-        ej = str(ejercicio).strip().lower()
+        ej = _norm_ejercicio(ejercicio)
         grupo = clasificar_grupo_muscular(ej)
         if grupo == "otros":
             grupo = normalizar_grupo(grupo_muscular) or "otros"
@@ -178,7 +195,7 @@ def get_historial_ejercicio(ejercicio: str, limite_dias: int = 5) -> list:
     """Últimas sesiones (por fecha) de un ejercicio: para cada día, peso máx,
     reps máx y nº de series. Más reciente primero. Sirve para sobrecarga progresiva."""
     try:
-        ej = str(ejercicio).strip().lower()
+        ej = _norm_ejercicio(ejercicio)
         r = get_client().table("gym_ejercicios").select("fecha,reps,peso,serie") \
             .eq("ejercicio", ej).order("fecha", desc=True).limit(300).execute()
         por_dia = {}

@@ -2351,6 +2351,41 @@ def _chat_answer(text: str) -> str:
     return answer
 
 
+def _entrenador_answer(mensaje: str, ejercicio: str = "", contexto: str = "") -> str:
+    """Entrenador personal para la PWA: responde sobre el ejercicio actual usando
+    el contexto que envía la web (historial, plan, récord) + memoria de la conversación."""
+    system_prompt = (
+        f"Eres el entrenador personal de {PLAYER_NAME}. Objetivo del usuario: GANAR MASA MUSCULAR (hipertrofia).\n"
+        f"Protocolo de trabajo: 4 series por ejercicio, la 1ª de CALENTAMIENTO (~50% del peso, sin fallo) y "
+        f"3 series de trabajo en el rango 8-12 reps, dejando 1-2 repeticiones en reserva (RIR) salvo la última.\n"
+        f"Aplica sobrecarga progresiva: si la última sesión llegó a 12+ reps, sube el peso; si no, busca 1 rep más.\n"
+        f"{('CONTEXTO ACTUAL: ' + contexto) if contexto else ''}\n\n"
+        "Responde en español, BREVE y concreto (2-5 frases), con cifras de peso y reps cuando ayude. "
+        "Sé motivador pero realista. Texto plano, sin etiquetas HTML. "
+        "Recuerda los mensajes anteriores de la conversación."
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    try:
+        for h in _load_chat_history():
+            if h.get("role") in ("user", "assistant") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"][:1200]})
+    except Exception:
+        pass
+    user_msg = f"[Ejercicio: {ejercicio}] {mensaje}" if ejercicio else mensaje
+    messages.append({"role": "user", "content": user_msg})
+    from groq import Groq
+    client = Groq(api_key=GROQ_API_KEY)
+    resp = client.chat.completions.create(
+        model=GROQ_MODEL, messages=messages, max_tokens=500, temperature=0.6,
+    )
+    answer = resp.choices[0].message.content.strip()
+    try:
+        _save_chat_turn(user_msg, answer)
+    except Exception:
+        pass
+    return answer
+
+
 def _verificar_jwt(req) -> bool:
     """Valida el JWT de Supabase (header Authorization) contra Supabase Auth."""
     token = req.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -2394,6 +2429,24 @@ def _make_flask_app():
             return jsonify({"respuesta": _chat_answer(mensaje)})
         except Exception as e:
             logger.error(f"api_chat: {e}")
+            return jsonify({"error": "error generando respuesta"}), 500
+
+    @flask_app.route("/api/entrenador", methods=["POST", "OPTIONS"])
+    def api_entrenador():
+        if request.method == "OPTIONS":
+            return ("", 204)
+        if not _verificar_jwt(request):
+            return jsonify({"error": "no autorizado"}), 401
+        data = request.get_json(force=True, silent=True) or {}
+        mensaje = (data.get("mensaje") or "").strip()
+        if not mensaje:
+            return jsonify({"error": "mensaje vacío"}), 400
+        ejercicio = (data.get("ejercicio") or "").strip()
+        contexto = (data.get("contexto") or "").strip()[:2000]
+        try:
+            return jsonify({"respuesta": _entrenador_answer(mensaje, ejercicio, contexto)})
+        except Exception as e:
+            logger.error(f"api_entrenador: {e}")
             return jsonify({"error": "error generando respuesta"}), 500
 
     @flask_app.route("/api/mejoras/generar", methods=["POST", "OPTIONS"])
