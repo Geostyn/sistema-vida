@@ -1,0 +1,2339 @@
+{
+ "from": "2025-07-04",
+ "to": "2026-07-03",
+ "net_gold_pct": 25.324,
+ "bias_counts": {
+  "BULLISH": 833,
+  "BEARISH": 549,
+  "NEUTRAL": 165
+ },
+ "htf_counts": {
+  "STRONG_UP": 916,
+  "STRONG_DOWN": 484,
+  "NEUTRAL": 147
+ },
+ "daily": [
+  {
+   "date": "2025-07-04",
+   "bull": 3,
+   "bear": 2,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.243,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-07",
+   "bull": 1,
+   "bear": 5,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.289,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-08",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.982,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-09",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.198,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-10",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.186,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-11",
+   "bull": 3,
+   "bear": 3,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.746,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-14",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.724,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-15",
+   "bull": 4,
+   "bear": 0,
+   "neut": 2,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.687,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-16",
+   "bull": 3,
+   "bear": 0,
+   "neut": 3,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.495,
+   "match": "·"
+  },
+  {
+   "date": "2025-07-17",
+   "bull": 5,
+   "bear": 0,
+   "neut": 1,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.084,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-18",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.329,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-21",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.347,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-22",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.031,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-23",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.188,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-24",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.705,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-25",
+   "bull": 3,
+   "bear": 0,
+   "neut": 3,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.056,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-28",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.558,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-29",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.418,
+   "match": "✗"
+  },
+  {
+   "date": "2025-07-30",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.632,
+   "match": "✓"
+  },
+  {
+   "date": "2025-07-31",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.132,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-01",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 2.218,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-04",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.651,
+   "match": "·"
+  },
+  {
+   "date": "2025-08-05",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.02,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-06",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.445,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-07",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.695,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-08",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.213,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-11",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.162,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-12",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.185,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-13",
+   "bull": 1,
+   "bear": 2,
+   "neut": 3,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.371,
+   "match": "·"
+  },
+  {
+   "date": "2025-08-14",
+   "bull": 0,
+   "bear": 4,
+   "neut": 2,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.035,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-15",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.035,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-18",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.233,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-19",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.586,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-20",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.959,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-21",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.115,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-22",
+   "bull": 2,
+   "bear": 4,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.967,
+   "match": "✗"
+  },
+  {
+   "date": "2025-08-25",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.026,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-26",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.287,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-27",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.229,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-28",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.748,
+   "match": "✓"
+  },
+  {
+   "date": "2025-08-29",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.017,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-01",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.936,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-02",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.585,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-03",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.694,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-04",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.455,
+   "match": "✗"
+  },
+  {
+   "date": "2025-09-05",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.993,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-08",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.185,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-09",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.339,
+   "match": "✗"
+  },
+  {
+   "date": "2025-09-10",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.459,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-11",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.274,
+   "match": "✗"
+  },
+  {
+   "date": "2025-09-12",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.166,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-15",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.247,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-16",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.088,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-17",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.86,
+   "match": "✗"
+  },
+  {
+   "date": "2025-09-18",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.57,
+   "match": "✗"
+  },
+  {
+   "date": "2025-09-19",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.237,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-22",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.518,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-23",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.448,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-24",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.78,
+   "match": "✗"
+  },
+  {
+   "date": "2025-09-25",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.002,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-26",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.293,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-29",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.232,
+   "match": "✓"
+  },
+  {
+   "date": "2025-09-30",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.503,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-01",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.118,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-02",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.004,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-03",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.764,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-06",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.553,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-07",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.544,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-08",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.23,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-09",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.165,
+   "match": "✗"
+  },
+  {
+   "date": "2025-10-10",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.535,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-13",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.645,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-14",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.427,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-15",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.094,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-16",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 2.737,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-17",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -2.424,
+   "match": "✗"
+  },
+  {
+   "date": "2025-10-20",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 2.512,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-21",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -5.586,
+   "match": "✗"
+  },
+  {
+   "date": "2025-10-22",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.57,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-23",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 1.081,
+   "match": "·"
+  },
+  {
+   "date": "2025-10-24",
+   "bull": 0,
+   "bear": 3,
+   "neut": 3,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -0.493,
+   "match": "·"
+  },
+  {
+   "date": "2025-10-27",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.469,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-28",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.456,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-29",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.098,
+   "match": "✓"
+  },
+  {
+   "date": "2025-10-30",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.932,
+   "match": "✗"
+  },
+  {
+   "date": "2025-10-31",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -0.417,
+   "match": "·"
+  },
+  {
+   "date": "2025-11-03",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.135,
+   "match": "✓"
+  },
+  {
+   "date": "2025-11-04",
+   "bull": 3,
+   "bear": 2,
+   "neut": 1,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.394,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-05",
+   "bull": 0,
+   "bear": 4,
+   "neut": 2,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.065,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-06",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.007,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-07",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.023,
+   "match": "✓"
+  },
+  {
+   "date": "2025-11-10",
+   "bull": 4,
+   "bear": 2,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.773,
+   "match": "✓"
+  },
+  {
+   "date": "2025-11-11",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.235,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-12",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.541,
+   "match": "✓"
+  },
+  {
+   "date": "2025-11-13",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.505,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-14",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -2.506,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-17",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.119,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-18",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 1.048,
+   "match": "·"
+  },
+  {
+   "date": "2025-11-19",
+   "bull": 0,
+   "bear": 0,
+   "neut": 6,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.459,
+   "match": "·"
+  },
+  {
+   "date": "2025-11-20",
+   "bull": 0,
+   "bear": 3,
+   "neut": 3,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -0.101,
+   "match": "·"
+  },
+  {
+   "date": "2025-11-21",
+   "bull": 0,
+   "bear": 1,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -0.08,
+   "match": "·"
+  },
+  {
+   "date": "2025-11-24",
+   "bull": 0,
+   "bear": 5,
+   "neut": 1,
+   "dominant": "BEARISH",
+   "day_ret_pct": 2.227,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-25",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.101,
+   "match": "✗"
+  },
+  {
+   "date": "2025-11-26",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.367,
+   "match": "✓"
+  },
+  {
+   "date": "2025-11-27",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.025,
+   "match": "✓"
+  },
+  {
+   "date": "2025-11-28",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.668,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-01",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.541,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-02",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.334,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-03",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.266,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-04",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.013,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-05",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.096,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-08",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.255,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-09",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.285,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-10",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.337,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-11",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.964,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-12",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.663,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-15",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.404,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-16",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.151,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-17",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.265,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-18",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.024,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-19",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.353,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-22",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.373,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-23",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.056,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-24",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.877,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-26",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.654,
+   "match": "✓"
+  },
+  {
+   "date": "2025-12-29",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -3.67,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-30",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.483,
+   "match": "✗"
+  },
+  {
+   "date": "2025-12-31",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -1.08,
+   "match": "·"
+  },
+  {
+   "date": "2026-01-02",
+   "bull": 0,
+   "bear": 0,
+   "neut": 6,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -0.36,
+   "match": "·"
+  },
+  {
+   "date": "2026-01-05",
+   "bull": 2,
+   "bear": 0,
+   "neut": 4,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 1.071,
+   "match": "·"
+  },
+  {
+   "date": "2026-01-06",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.988,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-07",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.209,
+   "match": "✗"
+  },
+  {
+   "date": "2026-01-08",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.658,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-09",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.9,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-12",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.591,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-13",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.179,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-14",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.165,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-15",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.347,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-16",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.09,
+   "match": "✗"
+  },
+  {
+   "date": "2026-01-19",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.289,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-20",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 2.0,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-21",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.065,
+   "match": "✗"
+  },
+  {
+   "date": "2026-01-22",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 2.874,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-23",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.664,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-26",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.196,
+   "match": "✗"
+  },
+  {
+   "date": "2026-01-27",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 2.341,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-28",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 4.063,
+   "match": "✓"
+  },
+  {
+   "date": "2026-01-29",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -3.055,
+   "match": "✗"
+  },
+  {
+   "date": "2026-01-30",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -7.677,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-02",
+   "bull": 4,
+   "bear": 2,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.657,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-03",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 2.16,
+   "match": "·"
+  },
+  {
+   "date": "2026-02-04",
+   "bull": 0,
+   "bear": 0,
+   "neut": 6,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -1.606,
+   "match": "·"
+  },
+  {
+   "date": "2026-02-05",
+   "bull": 0,
+   "bear": 5,
+   "neut": 1,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.65,
+   "match": "✓"
+  },
+  {
+   "date": "2026-02-06",
+   "bull": 0,
+   "bear": 5,
+   "neut": 1,
+   "dominant": "BEARISH",
+   "day_ret_pct": 3.99,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-09",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 1.514,
+   "match": "·"
+  },
+  {
+   "date": "2026-02-10",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.155,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-11",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.625,
+   "match": "✓"
+  },
+  {
+   "date": "2026-02-12",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -2.806,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-13",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.238,
+   "match": "✓"
+  },
+  {
+   "date": "2026-02-16",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.709,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-17",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -1.613,
+   "match": "·"
+  },
+  {
+   "date": "2026-02-18",
+   "bull": 0,
+   "bear": 3,
+   "neut": 3,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 1.76,
+   "match": "·"
+  },
+  {
+   "date": "2026-02-19",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.468,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-20",
+   "bull": 4,
+   "bear": 2,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 2.202,
+   "match": "✓"
+  },
+  {
+   "date": "2026-02-23",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.366,
+   "match": "✓"
+  },
+  {
+   "date": "2026-02-24",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.668,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-25",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.257,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-26",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.018,
+   "match": "✗"
+  },
+  {
+   "date": "2026-02-27",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.632,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-02",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.075,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-03",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -4.708,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-04",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.678,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-05",
+   "bull": 5,
+   "bear": 1,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.763,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-06",
+   "bull": 0,
+   "bear": 4,
+   "neut": 2,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.724,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-09",
+   "bull": 0,
+   "bear": 1,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 1.343,
+   "match": "·"
+  },
+  {
+   "date": "2026-03-10",
+   "bull": 2,
+   "bear": 4,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.136,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-11",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.637,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-12",
+   "bull": 5,
+   "bear": 0,
+   "neut": 1,
+   "dominant": "BULLISH",
+   "day_ret_pct": -1.729,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-13",
+   "bull": 0,
+   "bear": 1,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -2.053,
+   "match": "·"
+  },
+  {
+   "date": "2026-03-16",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.205,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-17",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.438,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-18",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.616,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-19",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -4.149,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-20",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.941,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-23",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.413,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-24",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 3.528,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-25",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.94,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-26",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.518,
+   "match": "✓"
+  },
+  {
+   "date": "2026-03-27",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.714,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-30",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.836,
+   "match": "✗"
+  },
+  {
+   "date": "2026-03-31",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 2.967,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-01",
+   "bull": 0,
+   "bear": 3,
+   "neut": 3,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.173,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-02",
+   "bull": 1,
+   "bear": 0,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -2.355,
+   "match": "·"
+  },
+  {
+   "date": "2026-04-06",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.716,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-07",
+   "bull": 2,
+   "bear": 0,
+   "neut": 4,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.986,
+   "match": "·"
+  },
+  {
+   "date": "2026-04-08",
+   "bull": 2,
+   "bear": 0,
+   "neut": 4,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -1.811,
+   "match": "·"
+  },
+  {
+   "date": "2026-04-09",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.319,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-10",
+   "bull": 4,
+   "bear": 0,
+   "neut": 2,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.063,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-13",
+   "bull": 0,
+   "bear": 1,
+   "neut": 5,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.969,
+   "match": "·"
+  },
+  {
+   "date": "2026-04-14",
+   "bull": 3,
+   "bear": 3,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.573,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-15",
+   "bull": 5,
+   "bear": 1,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.819,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-16",
+   "bull": 4,
+   "bear": 0,
+   "neut": 2,
+   "dominant": "BULLISH",
+   "day_ret_pct": -0.816,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-17",
+   "bull": 6,
+   "bear": 0,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.243,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-20",
+   "bull": 4,
+   "bear": 2,
+   "neut": 0,
+   "dominant": "BULLISH",
+   "day_ret_pct": 0.876,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-21",
+   "bull": 5,
+   "bear": 0,
+   "neut": 1,
+   "dominant": "BULLISH",
+   "day_ret_pct": -2.996,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-22",
+   "bull": 0,
+   "bear": 2,
+   "neut": 4,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.006,
+   "match": "·"
+  },
+  {
+   "date": "2026-04-23",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.09,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-24",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.251,
+   "match": "✗"
+  },
+  {
+   "date": "2026-04-27",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.36,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-28",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.023,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-29",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.16,
+   "match": "✓"
+  },
+  {
+   "date": "2026-04-30",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.03,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-01",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.191,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-04",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.064,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-05",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.545,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-06",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.596,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-07",
+   "bull": 2,
+   "bear": 2,
+   "neut": 2,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.306,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-08",
+   "bull": 2,
+   "bear": 0,
+   "neut": 4,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": 0.482,
+   "match": "·"
+  },
+  {
+   "date": "2026-05-11",
+   "bull": 4,
+   "bear": 0,
+   "neut": 2,
+   "dominant": "BULLISH",
+   "day_ret_pct": 1.07,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-12",
+   "bull": 1,
+   "bear": 4,
+   "neut": 1,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.707,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-13",
+   "bull": 0,
+   "bear": 0,
+   "neut": 6,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -0.559,
+   "match": "·"
+  },
+  {
+   "date": "2026-05-14",
+   "bull": 0,
+   "bear": 0,
+   "neut": 6,
+   "dominant": "NEUTRAL",
+   "day_ret_pct": -1.079,
+   "match": "·"
+  },
+  {
+   "date": "2026-05-15",
+   "bull": 0,
+   "bear": 5,
+   "neut": 1,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.829,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-18",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.94,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-19",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.752,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-20",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.994,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-21",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.047,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-22",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.41,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-25",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.002,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-26",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.892,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-27",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.422,
+   "match": "✓"
+  },
+  {
+   "date": "2026-05-28",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.917,
+   "match": "✗"
+  },
+  {
+   "date": "2026-05-29",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.101,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-01",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.31,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-02",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.146,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-03",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.941,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-04",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.727,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-05",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.154,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-08",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.357,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-09",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.416,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-10",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.21,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-11",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 3.265,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-12",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.057,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-15",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.657,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-16",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.345,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-17",
+   "bull": 0,
+   "bear": 5,
+   "neut": 1,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.334,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-18",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.126,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-19",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.904,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-22",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.244,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-23",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.947,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-24",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.664,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-25",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.888,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-26",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.278,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-29",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.316,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-30",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.723,
+   "match": "✗"
+  },
+  {
+   "date": "2026-07-01",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.052,
+   "match": "✗"
+  },
+  {
+   "date": "2026-07-02",
+   "bull": 0,
+   "bear": 6,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.713,
+   "match": "✗"
+  },
+  {
+   "date": "2026-07-03",
+   "bull": 0,
+   "bear": 3,
+   "neut": 3,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.599,
+   "match": "✗"
+  }
+ ]
+}

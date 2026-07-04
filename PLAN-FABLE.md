@@ -1,5 +1,12 @@
 # PLAN DE MEJORA — Bot de Trading XAUUSD (handoff para otra sesión / otro modelo)
 
+> **ESTADO 2026-07-04: PLAN EJECUTADO COMPLETO** (Fases A, B1-B8, C, D — ver
+> `PLAN-FABLE-EJECUCION.md` para resultados y lo poco que queda: vigilancia P0
+> 48 h + decisión del usuario sobre DAYTRADE). Los 3 problemas grandes del §6:
+> 6.1 backtester unificado ✅ construido y validado (gap vivo = +0.7);
+> 6.2 sesgo direccional ✅ causa raíz = régimen del mercado, no bug;
+> 6.3 régimen/breakout — sigue abierto (investigación futura).
+
 > **Para el asistente que lea esto:** eres un ingeniero cuantitativo senior. Este bot
 > FUNCIONA y tiene dinero (demo) en juego. Tu trabajo NO es reescribirlo: es auditarlo,
 > encontrar fallos reales y mejorar SOLO lo que valides con datos. Lee entero este

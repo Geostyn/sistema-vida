@@ -88,6 +88,7 @@ class TelegramBot:
             f"  /estado — por qué no hay señal ahora\n"
             f"  /radiografia — qué dice cada módulo del cerebro ahora\n"
             f"  /salud — estado de las fuentes de datos\n"
+            f"  /ml_check — ¿el meta-labeling ML ya valida?\n"
             f"  /status — métricas del sistema\n"
             f"  /micuenta — estado cuenta personal\n"
             f"  /saldo 250.00 — sincronizar saldo personal\n"
@@ -245,6 +246,10 @@ class TelegramBot:
             elif cmd == "/salud":
                 # Salud de las fuentes de datos (MT5, yfinance, FRED, COT, noticias…)
                 commands.append({"type": "salud"})
+
+            elif cmd == "/ml_check":
+                # Evaluación walk-forward del meta-labeling (¿el ML ya valida?)
+                commands.append({"type": "ml_check"})
 
             elif cmd == "/funded":
                 commands.append({"type": "funded"})

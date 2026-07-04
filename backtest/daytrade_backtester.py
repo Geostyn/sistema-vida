@@ -506,6 +506,14 @@ if __name__ == "__main__":
 
     dt_to   = datetime.now(timezone.utc)
     dt_from = dt_to - timedelta(days=days)
+    # Ventanas explícitas para validación IS/OOS: --from 2024-07-04 --to 2025-07-04
+    if "--to" in sys.argv:
+        dt_to = datetime.fromisoformat(
+            sys.argv[sys.argv.index("--to") + 1]).replace(tzinfo=timezone.utc)
+        dt_from = dt_to - timedelta(days=days)
+    if "--from" in sys.argv:
+        dt_from = datetime.fromisoformat(
+            sys.argv[sys.argv.index("--from") + 1]).replace(tzinfo=timezone.utc)
     run_daytrade_backtest(conn, symbol, dt_from, dt_to,
                           cfg, spread_usd=spread,
                           hour_ranges=hour_ranges, require_h4=require_h4)

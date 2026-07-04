@@ -172,6 +172,12 @@ def init_database(db_path: str):
         ("garch_vol",       "REAL DEFAULT NULL"),
         ("kalman_slope",    "REAL DEFAULT NULL"),
         ("neural_proba",    "REAL DEFAULT NULL"),  # LSTM modo sombra (no veta)
+        # Confluencias que no se persistían (Fase C quick-win 2026-07-04) —
+        # necesarias para auditar el sesgo direccional y entrenar el ML
+        ("dxy_aligned",     "INTEGER DEFAULT NULL"),
+        ("mtf_aligned",     "INTEGER DEFAULT NULL"),
+        ("macro_bias",      "TEXT DEFAULT NULL"),
+        ("tpo_score",       "REAL DEFAULT NULL"),
     ]
     for col, decl in migrations:
         try:
@@ -249,8 +255,9 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
             personal_lots, personal_risk_acc, personal_apta,
             personal_entry, personal_sl,
             inter_score, real_yield_imp, cot_impact, cot_percentile,
-            garch_vol, kalman_slope, neural_proba
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            garch_vol, kalman_slope, neural_proba,
+            dxy_aligned, mtf_aligned, macro_bias, tpo_score
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         signal.get("timestamp"),
         signal.get("symbol"),
@@ -304,6 +311,10 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
         signal.get("garch_vol"),
         signal.get("kalman_slope"),
         signal.get("neural_proba"),
+        None if signal.get("dxy_aligned") is None else int(signal["dxy_aligned"]),
+        None if signal.get("mtf_aligned") is None else int(signal["mtf_aligned"]),
+        signal.get("macro_bias"),
+        signal.get("tpo_score"),
     ))
     conn.commit()
     conn.close()
@@ -707,6 +718,7 @@ class TradingSystem:
         # el digest si el bot reinicia después de las 21:00 UTC
         self._last_digest_date = None
         self._last_weekly_key  = None  # guard "1 reporte semanal" (semana ISO)
+        self._last_mlcheck_key = None  # guard "1 ml_check auto/semana" (sábado)
 
     def start(self):
         """Inicializa conexiones y verifica el setup."""
@@ -776,6 +788,9 @@ class TradingSystem:
 
         elif ctype == "salud":
             self._send_salud()
+
+        elif ctype == "ml_check":
+            self._send_ml_check()
 
         elif ctype == "funded":
             if self.config.get("funded", {}).get("enabled", False):
@@ -1652,6 +1667,9 @@ class TradingSystem:
         # ── Reporte semanal (domingo ≥ 18:00 UTC, gate propio) ──
         self._maybe_send_weekly_report()
 
+        # ── ML check semanal (sábado ≥ 10:00 UTC, mercado cerrado) ──
+        self._maybe_send_ml_check()
+
         # ── FundedNext 2K: aplicar resultados resueltos al equity simulado ──
         # Solo si la cuenta de fondeo está activa (desactivada 2026-06-17)
         if self.config.get("funded", {}).get("enabled", False):
@@ -1882,6 +1900,64 @@ class TradingSystem:
         # En éxito o fallo: marcar el día (no reintentar en bucle)
         self._last_digest_date = today
         self._set_meta("last_digest_date", today)
+
+    def _send_ml_check(self, auto: bool = False):
+        """Responde /ml_check — corre meta_labeling --dedup en SUBPROCESO
+        (el módulo hace os.chdir + logging.disable a nivel de import: no se
+        puede importar dentro del bot) y resume el veredicto walk-forward.
+        Guardarraíl de activación: expectancia OOS > +0.05R manteniendo ≥40%
+        de las señales (PLAN-FABLE §5)."""
+        import html
+        import subprocess
+        if not auto:
+            self.telegram.send_message(
+                "🤖 Evaluando meta-labeling (walk-forward --dedup)… ~1 min")
+        try:
+            script = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "backtest", "meta_labeling.py")
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+            r = subprocess.run(
+                [sys.executable, script, "--dedup"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=600, env=env,
+                cwd=os.path.dirname(os.path.abspath(__file__)))
+            out = r.stdout or ""
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or out)[-400:])
+            keys = ("Live:", "BASELINE", "proba ALTA", "proba BAJA",
+                    "Tras meta-filtro", "✅", "🔴", "Conclusión")
+            resumen = "\n".join(
+                ln.strip() for ln in out.splitlines()
+                if any(k in ln for k in keys)) or out[-1200:]
+            titulo = ("🤖 <b>ML CHECK semanal</b> (sábado, mercado cerrado)"
+                      if auto else "🤖 <b>ML CHECK</b> — meta_labeling --dedup")
+            self.telegram.send_message(
+                f"{titulo}\n<pre>{html.escape(resumen)}</pre>\n"
+                f"Guardarraíl: solo activar el meta-gate si exp OOS mejora "
+                f"&gt; +0.05R manteniendo ≥40% de señales.")
+            logger.info("ML check enviado a Telegram")
+        except Exception as e:
+            logger.warning(f"/ml_check error: {e}")
+            self.telegram.send_message(f"❌ /ml_check error: {e}")
+
+    def _maybe_send_ml_check(self):
+        """Sábado ≥ 10:00 UTC (mercado cerrado), una vez por semana ISO:
+        corre /ml_check automáticamente — recordatorio con datos, no solo
+        aviso. Guard persistido en bot_meta (patrón del reporte semanal)."""
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 5 or now.hour < 10:
+            return
+        week_key = now.strftime("%G-W%V")
+        if self._last_mlcheck_key is None:
+            self._last_mlcheck_key = self._get_meta("last_ml_check")
+        if self._last_mlcheck_key == week_key:
+            return
+        # Marcar ANTES de correr: si el subproceso fallara repetidamente no
+        # queremos relanzarlo (y spamear) en cada ciclo del sábado
+        self._last_mlcheck_key = week_key
+        self._set_meta("last_ml_check", week_key)
+        self._send_ml_check(auto=True)
 
     def _maybe_send_weekly_report(self):
         """Domingo ≥ 18:00 UTC, una vez por semana ISO. Sustituye a

@@ -1,0 +1,30 @@
+Bias audit XAUUSD | 2025-07-04 → 2026-07-03 | 1547 cierres H4
+
+── Distribución del bias (por cierre H1) ──
+bias
+BULLISH    833
+BEARISH    549
+NEUTRAL    165
+
+── HTF trend (veto counter-trend) ──
+htf_trend
+STRONG_UP      916
+STRONG_DOWN    484
+NEUTRAL        147
+
+── ¿Acierta el bias? (retorno forward 24 H1) ──
+  BULLISH  n= 833  acierto=57.3%  fwd_ret medio=+0.19%
+  BEARISH  n= 549  acierto=50.3%  fwd_ret medio=+0.01%
+
+── Por día: bias dominante vs oro real ──
+  día           BULL  BEAR  NEUT  dominante  Δoro día  match
+  2025-07-04       3     2     0    BULLISH     0.24%  ✓
+  2025-07-07       1     5     0    BEARISH     0.29%  ✗
+  2025-07-08       0     6     0    BEARISH    -0.98%  ✓
+  2025-07-09       0     6     0    BEARISH     0.20%  ✗
+  2025-07-10       0     6     0    BEARISH     0.19%  ✗
+  2025-07-11       3     3     0    BEARISH     0.75%  ✗
+  2025-07-14       6     0     0    BULLISH    -0.72%  ✗
+  2025-07-15       4     0     2    BULLISH    -0.69%  ✗
+  2025-07-16       3     0     3    NEUTRAL     0.50%  ·
+  2025-07-17       5     0     1    BULLISH    -0.08%  ✗

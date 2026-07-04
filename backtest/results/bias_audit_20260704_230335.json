@@ -1,0 +1,275 @@
+{
+ "from": "2026-06-01",
+ "to": "2026-07-03",
+ "net_gold_pct": -8.098,
+ "bias_counts": {
+  "BEARISH": 530,
+  "NEUTRAL": 15
+ },
+ "htf_counts": {
+  "STRONG_DOWN": 545
+ },
+ "daily": [
+  {
+   "date": "2026-06-01",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.188,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-02",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.008,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-03",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.569,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-04",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.279,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-05",
+   "bull": 0,
+   "bear": 21,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -3.206,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-07",
+   "bull": 0,
+   "bear": 1,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.0,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-08",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.37,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-09",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.866,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-10",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -4.162,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-11",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 4.846,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-12",
+   "bull": 0,
+   "bear": 21,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.218,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-14",
+   "bull": 0,
+   "bear": 1,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.0,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-15",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.417,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-16",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.46,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-17",
+   "bull": 0,
+   "bear": 16,
+   "neut": 6,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.483,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-18",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.648,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-19",
+   "bull": 0,
+   "bear": 19,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.858,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-21",
+   "bull": 0,
+   "bear": 1,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.0,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-22",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.199,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-23",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.988,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-24",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -2.51,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-25",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.346,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-26",
+   "bull": 0,
+   "bear": 21,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.422,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-28",
+   "bull": 0,
+   "bear": 1,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.0,
+   "match": "✗"
+  },
+  {
+   "date": "2026-06-29",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -1.196,
+   "match": "✓"
+  },
+  {
+   "date": "2026-06-30",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": -0.045,
+   "match": "✓"
+  },
+  {
+   "date": "2026-07-01",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 0.981,
+   "match": "✗"
+  },
+  {
+   "date": "2026-07-02",
+   "bull": 0,
+   "bear": 22,
+   "neut": 0,
+   "dominant": "BEARISH",
+   "day_ret_pct": 2.22,
+   "match": "✗"
+  },
+  {
+   "date": "2026-07-03",
+   "bull": 0,
+   "bear": 10,
+   "neut": 9,
+   "dominant": "BEARISH",
+   "day_ret_pct": 1.113,
+   "match": "✗"
+  }
+ ]
+}
