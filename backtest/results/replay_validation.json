@@ -1,0 +1,40 @@
+{
+  "window": [
+    "2026-06-03",
+    "2026-07-03"
+  ],
+  "real_signals": 43,
+  "offline_candidates": 46,
+  "match_rate": 0.372,
+  "unmatched_causes": {
+    "gate offline: Veto liquidez: barrido contra SELL en 4480.30": 2,
+    "gate offline: Veto liquidez: barrido contra SELL en 4462.22": 3,
+    "gate offline: Veto liquidez: barrido contra SELL en 4464.68": 3,
+    "gate offline: Régimen HIGH_VOL — volatilidad extrema, trading bloqueado": 2,
+    "dedup del engine tapó la re-emisión (misma idea emitida antes offline)": 13,
+    "gate offline: Veto liquidez: barrido contra SELL en 4161.35": 1,
+    "gate offline: Veto liquidez HTF: SELL contra swing_high H4 intacto en 4363": 1,
+    "gate offline: Veto liquidez: barrido contra SELL en 4324.59": 1,
+    "gate offline: Sin Order Block BEARISH válido cerca del precio": 1
+  },
+  "components": {
+    "bias_h4": 1.0,
+    "ob_type": 1.0,
+    "regime": 1.0,
+    "adx±2": 1.0,
+    "sweep": 1.0,
+    "fvg": 1.0,
+    "m15": 0.875,
+    "atr±5%": 0.812
+  },
+  "gap_mean": 0.744,
+  "gap_std": 0.577,
+  "gap_decomposition": {
+    "vp": 0.0,
+    "delta": 0.0,
+    "ml": 0.188,
+    "news": 0.0,
+    "residual": 0.556
+  },
+  "created": "2026-07-04T14:20:31.709332"
+}

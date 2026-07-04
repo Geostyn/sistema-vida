@@ -154,11 +154,15 @@ def build_backtest_engine(config: dict, connector: HistoricalConnector,
 def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
                 min_confluences: float | None = None, candidates: bool = False,
                 spread: float = 0.30, stride_garch: int = 1,
-                record_discards: bool = False, quiet: bool = False) -> dict:
+                record_discards: bool = False, quiet: bool = False,
+                cadence: str = "H1") -> dict:
     """
-    Corre analyze() al CIERRE de cada vela H1 del rango (hora servidor).
+    Corre analyze() al CIERRE de cada vela del `cadence` (hora servidor).
+    - cadence H1  (default): 1 evaluación/hora — barridos y baseline.
+    - cadence M15: 4 evaluaciones/hora con la vela H1 en formación sintetizada
+      desde M15 — se acerca al vivo (que evalúa cada 60 s); para replay/auditoría.
     Señales 24h como el vivo; la EJECUCIÓN (equity) se simula solo dentro
-    de la sesión y respetando max_simultaneous — mismas puertas que main.py.
+    de la sesión, en cierres H1 exactos, respetando max_simultaneous.
     """
     config = copy.deepcopy(load_config())
     # Cachés por reloj de pared contaminan el replay → GARCH siempre fresco
@@ -206,14 +210,16 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
 
     signals_log, trades, equity = [], [], [capital0]
     discards: dict = {}
+    discard_log: list = []   # (bar_time_server, reason) — para replay/auditoría
     active: list = []   # índices de barra donde el trade/orden deja de ocupar slot
 
-    closes = list(hc.iter_h1_closes(symbol, t_from, t_to))
+    cadence = cadence.upper()
+    closes = list(hc.iter_closes(symbol, cadence, t_from, t_to))
     n = len(closes)
     t0 = time.time()
     if not quiet:
         print(f"Backtest unificado {symbol} | {t_from} → {t_to} (servidor, "
-              f"UTC{offset:+.0f}) | {n} velas H1 | spread {spread} | "
+              f"UTC{offset:+.0f}) | {n} velas {cadence} | spread {spread} | "
               f"min_conf {config['risk'].get('min_confluences')}")
 
     for k, t_close in enumerate(closes):
@@ -242,11 +248,14 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
                 reason = (engine.last_discard.get(symbol) or {}).get("reason", "?")
                 key = reason.split("(")[0].strip()[:60]
                 discards[key] = discards.get(key, 0) + 1
+                discard_log.append({"t": str(t_close), "reason": key})
             continue
 
-        # Barra recién cerrada (la señal se evalúa en su cierre)
-        bar_idx = int(np.searchsorted(h1_opens, np.datetime64(t_close - pd.Timedelta(hours=1)),
-                                      side="left"))
+        # Última vela H1 CERRADA al cursor (para simular el trade)
+        bar_idx = int(np.searchsorted(h1_opens, np.datetime64(t_close), side="right")) - 1
+        while bar_idx >= 0 and pd.Timestamp(h1_full["time"].iloc[bar_idx]) \
+                + pd.Timedelta(hours=1) > t_close:
+            bar_idx -= 1
         rec = {
             "bar_time_server": str(t_close - pd.Timedelta(hours=1)),
             "signal_time_utc": sig["timestamp"],
@@ -275,8 +284,10 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
         }
 
         # ── Ejecución simulada: mismas puertas que el vivo ──
+        # Solo en cierres H1 exactos (la sim de trades camina en velas H1)
+        on_h1_close = (t_close.minute == 0)
         active = [e for e in active if e > bar_idx]
-        if in_session and len(active) < max_sim:
+        if in_session and on_h1_close and bar_idx >= 0 and len(active) < max_sim:
             outcome = _simulate_trade_managed(
                 h1_full, bar_idx, sig["direction"], float(sig["entry"]),
                 float(sig["sl"]), float(sig["tp1"]),
@@ -321,6 +332,7 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
         "from":       str(t_from), "to": str(t_to),
         "utc_offset": offset,
         "spread":     spread,
+        "cadence":    cadence,
         "stride_garch": stride_garch,
         "min_confluences": config["risk"].get("min_confluences"),
         "n_bars":     n,
@@ -341,7 +353,8 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
         if discards:
             top = sorted(discards.items(), key=lambda x: -x[1])[:12]
             print("Descartes:", *[f"  {v:5d}  {k}" for k, v in top], sep="\n")
-    return out | {"signals_log": signals_log, "trades": trades, "equity": equity}
+    return out | {"signals_log": signals_log, "trades": trades, "equity": equity,
+                  "discard_log": discard_log}
 
 
 def save_results(res: dict, tag: str = "") -> str:
@@ -365,12 +378,14 @@ if __name__ == "__main__":
     ap.add_argument("--spread", type=float, default=0.30)
     ap.add_argument("--stride-garch", type=int, default=1)
     ap.add_argument("--discards", action="store_true", help="contar motivos de descarte")
+    ap.add_argument("--cadence", default="H1", choices=["H1", "M15", "h1", "m15"])
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
 
     res = run_unified(symbol=args.symbol, t_from=args.t_from, t_to=args.t_to,
                       days=args.days, min_confluences=args.min_confluences,
                       candidates=args.candidates, spread=args.spread,
-                      stride_garch=args.stride_garch, record_discards=args.discards)
+                      stride_garch=args.stride_garch, record_discards=args.discards,
+                      cadence=args.cadence)
     path = save_results(res, args.tag)
     print(f"Resultados → {path}")

@@ -112,6 +112,9 @@ class HistoricalConnector:
 
     # ── Barra HTF en formación (desde H1 cerradas) ──────────────────
 
+    # Sub-timeframe con el que se sintetiza la vela en formación de cada TF
+    _FORMING_SUB = {"H4": "H1", "D1": "H1", "H1": "M15"}
+
     def _forming_bar(self, symbol: str, timeframe: str, last_closed_open) -> pd.DataFrame | None:
         mins = TF_MINUTES[timeframe]
         if timeframe == "D1":
@@ -122,15 +125,18 @@ class HistoricalConnector:
         # (cursor justo en el límite) no hay nada que sintetizar
         if last_closed_open is not None and pd.Timestamp(last_closed_open) >= period_start:
             return None
-        base = self._closed_upto(symbol, "H1")
+        sub_tf = self._FORMING_SUB.get(timeframe)
+        if sub_tf is None:
+            return None
+        base = self._closed_upto(symbol, sub_tf)
         if base is None:
             return None
-        h1, idx = base
+        sub_df, idx = base
         if idx == 0:
             return None
-        j0 = int(np.searchsorted(h1["time"].values.astype("datetime64[ns]")[:idx],
+        j0 = int(np.searchsorted(sub_df["time"].values.astype("datetime64[ns]")[:idx],
                                  np.datetime64(period_start), side="left"))
-        sub = h1.iloc[j0:idx]
+        sub = sub_df.iloc[j0:idx]
         if sub.empty:
             return None
         self.stats["forming_bars"] += 1
@@ -171,7 +177,9 @@ class HistoricalConnector:
         df, idx = base
         closed = df.iloc[max(0, idx - n_bars):idx]
         out = closed
-        if timeframe in ("H4", "D1"):
+        # HTF siempre; H1 solo si el cursor va a cadencia sub-horaria (en un
+        # cierre H1 exacto el período en formación está vacío → no-op)
+        if timeframe in ("H4", "D1", "H1"):
             last_open = closed["time"].iloc[-1] if len(closed) else None
             forming = self._forming_bar(symbol, timeframe, last_open)
             if forming is not None:
@@ -246,16 +254,19 @@ class HistoricalConnector:
 
     # ── Utilidades para el backtester ───────────────────────────────
 
-    def iter_h1_closes(self, symbol: str, t_from, t_to):
-        """Genera los instantes de CIERRE de cada vela H1 en [t_from, t_to]
+    def iter_closes(self, symbol: str, timeframe: str, t_from, t_to):
+        """Genera los instantes de CIERRE de cada vela del TF en [t_from, t_to]
         (hora servidor). El bucle del backtester fija el cursor en cada uno."""
-        entry = self._load(symbol, "H1")
+        entry = self._load(symbol, timeframe)
         if entry is None:
             return
-        closes = entry["df"]["time"] + pd.Timedelta(hours=1)
+        closes = entry["df"]["time"] + pd.Timedelta(minutes=TF_MINUTES[timeframe])
         mask = (closes >= pd.Timestamp(t_from)) & (closes <= pd.Timestamp(t_to))
         for t in closes[mask]:
             yield pd.Timestamp(t)
+
+    def iter_h1_closes(self, symbol: str, t_from, t_to):
+        yield from self.iter_closes(symbol, "H1", t_from, t_to)
 
     def coverage(self) -> dict:
         """Cobertura real de cada serie del caché (para preflight)."""
