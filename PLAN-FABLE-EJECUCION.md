@@ -1,104 +1,148 @@
-# PLAN-FABLE — EJECUCIÓN (handoff para la próxima sesión)
+# PLAN-FABLE — EJECUCIÓN (handoff actualizado 2026-07-04 ~15:00)
 
-> **Para el asistente:** la sesión del 2026-07-03 completó TODA la exploración y el diseño
-> (plan aprobado por el usuario) pero NO ejecutó ningún cambio — se acabaron los créditos justo
-> tras la aprobación. Lee `PLAN-FABLE.md` (contexto y reglas) y luego este archivo (plan aprobado
-> + hallazgos verificados). Empieza directamente por la FASE A. Trabaja en español.
+> **Para el asistente:** la sesión del 2026-07-04 ejecutó las Fases A, B1-B6 completas
+> (commits `5a96306 → f6597b9` en este repo). Lee `PLAN-FABLE.md` (reglas) y este archivo
+> (estado + qué falta). **Empieza por la FASE B7** (barrido de umbrales) o por donde pida
+> el usuario. Trabaja en español.
 
-**Python de producción (siempre):** `C:\Users\geost\AppData\Local\Python\pythoncore-3.14-64\python.exe` con `PYTHONIOENCODING=utf-8`. No correr backtests con `main.py` vivo (contención MT5: parar→backtest→reiniciar).
+**Python de producción (siempre):**
+`C:\Users\geost\AppData\Local\Python\pythoncore-3.14-64\python.exe` con `PYTHONIOENCODING=utf-8`.
 
----
-
-## Estado exacto al cortarse la sesión
-
-- **NADA ejecutado aún.** Ni commit de seguridad ni ningún fix. El primer paso pendiente es el
-  snapshot git (`git add -A && git commit`) — ojo: hay ~11 archivos modificados y ~9 nuevos sin
-  commitear de la sesión anterior (dedup, digest, yf_safe...); el snapshot los captura tal cual.
-- **P0 (dedup):** bot reiniciado 03-07 13:04 con el código nuevo (signal_dedup.py 11:21). Los 20
-  duplicados de la DB son del 02-07 11:33–11:39 (ANTES del fix). `sent_signals` = 0 filas = ninguna
-  señal emitida desde el reinicio. **Pendiente:** confirmar con la primera señal real + 48 h sin duplicados.
-- **Descubrimiento clave (P2, peor de lo documentado):** las 29 BUY de la DB son TODAS del
-  29-05→01-06 (código antiguo: scores NULL, confluencias 3–4.8, 22 son pares duplicados WIN+LOSS
-  al mismo minuto). **Desde el 01-06: 0 BUY y 320 SELL.** `bias_h4`=BEARISH en el 100% de las señales
-  del código actual. La pregunta de P2 no es "por qué BUY gana más" sino "por qué el pipeline NUNCA produce BUY".
-- `config.yaml` está en `.gitignore` y NO versionado (verificado — la alerta de seguridad no requiere acción).
-- Esquema `signals`: 62 columnas; el stream se distingue por `model` ('OB' intraday, 'DAYTRADE'; swing
-  NO pone model → bug 1). DAYTRADE en vivo: 15 señales, 4W/11L.
+**Regla de contención MT5 que CAMBIÓ:** el backtester unificado corre 100% del caché en
+disco (`backtest/cache/`) — NO necesita MT5 ni parar el bot. Solo el preload y los
+backtests legacy (`main.py --backtest`, daytrade_backtester) compiten con el bot.
 
 ---
 
-## FASE A — Fixes de salud (7 bugs confirmados por auditoría) — 1 reinicio del bot
+## ✅ HECHO (2026-07-04)
 
-Quirúrgicos, sin tocar la estrategia H1 validada. Commit de seguridad ANTES, commit por fase.
+### Fase A — 7 fixes de salud (commit `6553b0d`) — bot ya corriendo con esto
+1. SWING con rama propia en outcome_tracker (velas H4, `swing.max_outcome_bars_h4: 60`)
+   + `"model": "SWING"` en el dict de señal (signal_engine ~L1270).
+2. Categoría **SCRATCH** para cierres ~0 por auto-BE (|pnl| ≤ 1.5×comisión×volumen) —
+   excluida del WR como EXPIRED. Lectores actualizados: `get_performance_stats`,
+   `main._get_trade_stats`, ESTADO-SISTEMA, /status, digest, demo log Obsidian.
+3. CV temporal en learning_engine: `TimeSeriesSplit` + orden GLOBAL por timestamp
+   (vivo+backtest mezclados; training_store ahora devuelve el timestamp de columna).
+4. Cooldown de fallo 5 min (patrón macro_feed) en volume_profile y las 4 fuentes de
+   intermarket_feed + timeout COT 45→15 s.
+5. `PRAGMA journal_mode=WAL` + `busy_timeout=5000` en init_database + tabla `bot_meta`.
+6. `alerts.dedup_window_min: 45 → 60`.
+7. Reporte semanal con gate UTC propio (`_maybe_send_weekly_report`, domingo ≥18 UTC,
+   semana ISO) + guards de digest/semanal **persistidos** en `bot_meta`.
 
-1. **`ml/outcome_tracker.py:158` — SWING sin rama propia.** `is_dt=(model=="DAYTRADE")` pero swing pone
-   `"mode":"SWING"` (signal_engine.py:1269) sin `model` → default `"OB"` (main.py:279) → se resuelve en
-   H1/150 barras (~6 días) < hold swing 2–7 días → EXPIRED prematuro. Fix: `"model":"SWING"` en el dict
-   swing + rama en el tracker (velas H4, horizonte desde `swing.*`). Solo afecta señales nuevas.
-2. **`ml/outcome_tracker.py::_detect_outcome_mt5` — BE cuenta como LOSS** (`pnl>0?WIN:LOSS`): scratch
-   por auto-BE cierra ~0 negativo por comisiones → infla LOSS. Fix: categoría `SCRATCH`
-   (|pnl| ≤ ~1.5× comisión), excluida del WR como EXPIRED (el backtest ya tiene SCRATCH). Actualizar
-   lectores: `get_performance_stats`, `main._get_trade_stats`, dashboard, digest.
-3. **`ml/learning_engine.py:300` — CV con fuga.** `cross_val_score(cv=int)`=StratifiedKFold. Fix:
-   `TimeSeriesSplit(n_splits=cv_folds)` **y antes ordenar por timestamp** el dataset combinado
-   (`_load_training_data` ~218-229 concatena backtest DESPUÉS del vivo, sin orden global).
-4. **Cooldown de fallo ausente:** portar patrón `FAIL_COOLDOWN_MIN=5` de `data/macro_feed.py` a
-   `analysis/volume_profile.py::get_levels` (hoy: caché stale sin renovar `_cache_time` → refetch cada
-   5 s en caídas) y a las 4 fuentes de `data/intermarket_feed.py`. **COT además:** `requests.get(timeout=45)`×3
-   síncrono sin yf_safe → puede bloquear el ciclo ~135 s; bajar timeout y cooldown propio.
-5. **`main.py::init_database` — `PRAGMA journal_mode=WAL` + `busy_timeout`** (hoy sin WAL; bot escribe + dashboard/skills leen).
-6. **`config.yaml: alerts.dedup_window_min: 45 → 60`** (ventana < vela H1; garantiza 1 envío/vela duro).
-7. **`main.py` — bases de tiempo:** reporte semanal `schedule.every().sunday.at("18:00")` = hora LOCAL
-   vs digest UTC → pasarlo a gate UTC (patrón `_maybe_send_daily_digest`) + **persistir** `_last_digest_date`
-   (hoy en memoria → reenvía el digest si el bot reinicia después de las 21:00 UTC).
+Verificación: `main.py --test` OK ×2. **Bot reiniciado 04-07 14:01** vía INICIAR.bat.
 
-**Verificación:** `main.py --test` (1 ciclo, MT5 abierto) → reiniciar bot (DETENER.bat/INICIAR.bat) → log de arranque limpio. P0: vigilar 48 h sin duplicados (SQL por vela).
+### Fase B1 — HistoricalConnector + preload (commit `ec27886`)
+- `backtest/historical_connector.py` — duck-type de MT5Connector: cursor `set_now()`,
+  slices point-in-time O(log n), velas H4/D1 **y H1** en formación sintetizadas desde
+  el sub-TF (H1←M15, H4/D1←H1), bid/ask sintético (spread 0.30 config), `LookaheadError`.
+- `backtest/preload_history.py` — caché descargado: XAUUSD M15/H1/H4/D1 + 6 pares DXY,
+  **2023-01-02 → 2026-07-03** en `backtest/cache/*.pkl` + `meta.json`.
+- **Offset servidor↔UTC = +3** (verano; EET +2 invierno). Medido de los DATOS (apertura
+  semanal Lun 01:00 server = Dom 22:00 UTC Globex) porque el 04-07 era festivo US sin
+  ticks frescos. Caveat DST ±1h documentado en meta.json.
+- Selftest anti-lookahead: `preload_history.py --selftest` → OK (25 cursores × 11 series).
+
+### Fase B2 — Reloj inyectable (mismo commit)
+- `SignalEngine.__init__(..., clock=None)` → `self._now()`; 16 ocurrencias sustituidas
+  (`grep -c "datetime.now" signal_engine.py` == 1). Igual en `MarketRegimeEngine`.
+  Default idéntico → vivo bit a bit igual (verificado --test).
+
+### Fase B3-5 — Backtester unificado (commit `cffb35d`)
+- `backtest/neutral_mocks.py` — news neutro (+1.0 fija), macro neutro (+0.3 fija).
+- `backtest/unified_backtester.py` — `SignalEngine.analyze()` REAL barra a barra.
+  Wiring espejo de main.py: correlation REAL (memoizada por vela H4), regime y quant
+  REALES (garch_cache_min=0 por overlay); vp/delta/intermarket/ml/neural = None
+  → **máx offline 12.3/16.5**. Señales 24h; ejecución simulada con gates de sesión
+  (UTC desde offset) y max_simultaneous; reutiliza `_simulate_trade_managed` y
+  `_calculate_metrics` del legacy (comisiones incluidas).
+- Rendimiento: **~11 min/año a cadencia H1 sin stride** (objetivo <40 ✓).
+- Verificado: 30 días → 19 señales, 6 trades, WR 25% PF 0.59 (junio fue malo también
+  en vivo); 3 señales auditadas a mano (18/18 checks).
+
+### Fase B6 — Replay-validación (commit `f6597b9`)
+- `backtest/replay_validate.py` + `--cadence M15` + `discard_log` por barra.
+- Señales reales jun-jul: 254 filas OB → 195 dedup por vela → **43 ideas** (regla
+  `_is_duplicate` del engine: misma dirección + entry <0.75 ATR).
+- **RESULTADO:** componentes estructurales **100%** (bias_h4, ob_type, regime, adx±2,
+  sweep, fvg — 16/16); atr±5% 81% y m15 88% = efecto forming-bar (documentado, NO
+  lookahead). Match estricto 37%; **ideas reproducidas 67%** (match + 13 casos donde
+  el dedup del engine emitió la idea antes). 100% de no-match con causa asignable
+  (vetos de liquidez/HIGH_VOL sensibles al instante de muestreo: vivo evalúa cada 60 s).
+- **GAP offline→vivo: Δ̄ = +0.74, σ = 0.58** (ML +0.19, residual macro+intermarket
+  +0.56) → **umbral_vivo ≈ umbral_offline + 0.7**. NUNCA copiar umbrales offline a
+  config.yaml sin esta traducción. Informe: `backtest/results/replay_validation.json`.
+
+### Comandos del backtester unificado (sin MT5, con el bot vivo)
+```bash
+PY=/c/Users/geost/AppData/Local/Python/pythoncore-3.14-64/python.exe
+$PY backtest/unified_backtester.py --days 30 --discards          # run normal
+$PY backtest/unified_backtester.py --days 365 --min-confluences 0 --candidates --tag cand_is
+$PY backtest/unified_backtester.py --from 2024-07-04 --to 2025-07-04 --tag oos
+$PY backtest/replay_validate.py --from 2026-06-03 --to 2026-07-03
+$PY backtest/preload_history.py --selftest                       # validar caché
+# refrescar caché (SOLO con bot parado): $PY backtest/preload_history.py --refresh
+```
 
 ---
 
-## FASE B — Backtester unificado (P1, EL desbloqueo)
+## ⬜ PENDIENTE (en orden)
 
-Objetivo: correr el `SignalEngine.analyze()` REAL barra a barra sobre histórico → `min_confluences`, ML, LSTM y pesos pasan a ser validables. Viable: todo se inyecta ya por constructor (`SignalEngine.__init__(mt5_connector, news_feed, config, correlation_engine, macro_feed, learning_engine, volume_profile, delta_engine, regime_engine, intermarket_feed, neural_engine, quant_engine)`); los datos entran por `self.mt5.get_rates()`/`get_current_price()` (helper `_get_data` ~L741).
+### B7 — Barrido post-hoc de umbrales
+1 run candidatos 1 año (`--min-confluences 0 --candidates --tag cand_is`, cadencia H1)
+→ del `signals_log` del JSON, simular por umbral t ∈ {4.0…8.0 paso 0.5}: filtrar señales
+`confluences ≥ t` + re-simular ejecución (gates sesión/max_sim) — o más simple: correr
+2-3 umbrales de control nativos y verificar ±1 trade. Recordar: escala OFFLINE
+(vivo ≈ offline + 0.7). Guardarraíles `optimize.better()` (PF≥+0.05, ret≥+8pp,
+DD≤+2pp, ≥70% trades) en AMBAS ventanas.
 
-**Decisiones de diseño aprobadas:**
-- Evaluación al cierre de cada barra H1; velas H4/D1 **en formación sintetizadas** desde H1 (sin esto el bias diverge 3 de cada 4 horas).
-- Mocks neutros constantes: news (+1.0), macro NEUTRAL (+0.3) — no distorsionan ranking. VP/delta/intermarket = None en v1 → **máximo offline 12.3/16.5**. El gap variable se MIDE con replay contra `trades.db`, no se asume. Barridos en escala offline; traducción a vivo con gap medio Δ̄ — NUNCA copiar el umbral directo a config.yaml.
-- Correlation (DXY sintético desde 6 pares MT5), regime y quant van REALES con el connector histórico.
+### B8 — Baseline IS/OOS archivado
+- IS:  `--from 2025-07-04 --to 2026-07-03 --tag baseline_is`  (~11-15 min)
+- OOS: `--from 2024-07-04 --to 2025-07-04 --tag baseline_oos`
+- Guardar los JSON de results/ como referencia permanente (baseline del engine real).
 
-**Archivos nuevos:**
-- `backtest/historical_connector.py` — duck-type de `MT5Connector` (`get_rates`, `get_current_price`, `copy_ticks_range`→None, `get_symbol_info`) con cursor `set_now(t)`; slices point-in-time O(1) con `np.searchsorted` (patrón de daytrade_backtester L163/223); síntesis de HTF en formación; bid/ask sintético (spread XAUUSD ~0.30 configurable); asserts `LookaheadError`; precarga 1 vez por (símbolo,TF) → pickle en `backtest/cache/` + `meta.json` (offset servidor↔UTC, cobertura). Símbolos: XAUUSD (M15/H1/H4/D1 + warm-up) y los 6 pares DXY (EURUSD/USDJPY/GBPUSD H1+H4; USDCAD/USDSEK/USDCHF H1).
-- `backtest/neutral_mocks.py` — NewsNeutralMock (`is_news_blackout`→False, `get_daily_summary`→[]), MacroNeutralMock (`get_macro_bias`→NEUTRAL). ~40 líneas.
-- `backtest/unified_backtester.py` — `build_backtest_engine()` espejo del wiring de main.py (~L643-652); bucle H1 con gates de sesión/max_simultaneous como el vivo (réplicas de `risk_manager.is_session_allowed` y `can_open_trade`); **REUTILIZA `_simulate_trade_managed` (backtester.py:561) y `_calculate_metrics` (:679)** — no duplicar. Modo candidatos: run con `min_confluences=0` registrando candidato+umbral efectivo → barrido post-hoc de N umbrales con 1 run (verificar con 2 umbrales de control nativos, ±1 trade). CLI: `--symbol --days --from/--to --refresh-cache --stride-garch --min-confluences`.
-- `backtest/replay_validate.py` — meta-validación: replay jun–jul 2026 vs señales reales de `trades.db`. Matching: misma dirección, ±75 min, entry ±0.5 ATR. Componentes reproducibles (bias_h4, ob_type, regime, adx±2, sweep/fvg/m15/pairs, atr±5%) deben coincidir ≥95% — desviación = BUG (lookahead/TZ/forming-bar), no efecto de mocks. Publicar Δ̄/σ del gap de confluencias (descomponer con vp_score/delta_score de la DB). Aceptación: ≥70-80% matcheadas, 100% de no-match con causa asignable.
+### Fase C — Sesgo direccional (P2: 0 BUY desde 01-06)
+1. `compute_directional_bias(df_h4)` sobre jun-jul con el HistoricalConnector:
+   distribución BULLISH/BEARISH/NEUTRAL por día vs precio real del oro. (El replay
+   confirmó que el bias offline == vivo al 100% → el análisis offline VALE.)
+   Dato: junio fue TRENDING_DOWN casi todo el mes (regime 100% match) — puede que el
+   0-BUY sea correcto (oro bajista), verificarlo contra el precio.
+2. Funnel BUY: % de candidatos BUY muertos por gate — usar `--candidates --discards`
+   (el discard_log ya registra motivo por barra).
+3. Quick-win: persistir en `signals` las confluencias no guardadas (dxy_aligned,
+   mtf_aligned, macro_bias, tpo_score...) — migración ALTER en init_database
+   (patrón existente), INSERT en main.save_signal ~L230.
+4. Informe causa raíz. NO tocar el bias sin validación 2 ventanas.
 
-**Único cambio de producción — reloj inyectable:**
-- `SignalEngine.__init__`: kwarg `clock=None` → `self._now = clock or (lambda: datetime.now(timezone.utc))`.
-- Sustituir las **16 ocurrencias** de `datetime.now(timezone.utc)` por `self._now()` en signal_engine.py: L88, 554, 555, 574, 714, 1199, 1200, 1211, 1297, 1324, 1376, 1379, 1429, 1750, 1781, 2065 (líneas del 03-07 — reverificar con Grep).
-- Igual en `analysis/market_regime.py` (kwarg clock; usos en `_cache_valid` L176 y `_cache_time` L200).
-- Verificación: `grep -c "datetime.now" signal_engine.py` == 1 + import-check. Default idéntico → vivo bit a bit igual.
-- Cachés restantes: `quant.garch_cache_min=0` vía overlay de config en memoria (deepcopy; config.yaml intacto). Instancia fresca de engine por run (resetea dedupe en memoria).
+### Fase D — Resto P3
+1. Comando Telegram `/ml_check` + recordatorio semanal (sábado, mercado cerrado) para
+   `meta_labeling --dedup`. Guardarraíl: expectancia OOS >0.05R manteniendo ≥40% señales.
+2. Auditoría DAYTRADE M15 (vivo dedup WR 28.6% vs backtest 41%): re-backtest 2 ventanas
+   con `daytrade_backtester.py` (⚠️ usa MT5 → bot parado o adaptarlo al connector).
+   Si no pasa → proponer `daytrade.enabled: false` (decisión del usuario).
+3. Dedup §9: contar velas H1 con 2 setups legítimos distintos misma dirección (~0 esperado).
 
-**Secuencia:** (1) connector+preload+selftest anti-lookahead (bot parado SOLO en preload) → (2) reloj → (3) mocks+wiring, analyze() en 5 cursores → (4) bucle 30 días, auditar 3 señales a mano → (5) rendimiento (objetivo año fiel <40 min; cuello=GARCH; `CachedCorrelationEngine` memoiza `get_pair_alignment` por vela H4) → (6) replay-validación → (7) modo candidatos+barrido → (8) doble ventana IS/OOS (integrar con validate_change) + archivar baseline.
+### P0 — Vigilancia dedup (48 h)
+Bot corriendo desde 04-07 14:01 con dedup_window_min=60. **04-07 festivo US → mercado
+cerrado; reabre domingo 22:00 UTC.** Con las primeras señales de la semana:
+```sql
+SELECT strftime('%Y-%m-%dT%H', timestamp) bar, direction, COUNT(*) n
+FROM signals WHERE timestamp >= '2026-07-04' GROUP BY 1,2 HAVING n > 1;
+```
+Aceptación: 0 filas en 48 h de mercado abierto. También revisar `sent_signals`.
 
-**Riesgos:** lookahead (asserts + "PF demasiado bueno = sospechar"), DST servidor (offset en meta.json, ±1h documentado), GIGO pares DXY (preflight cobertura; sin cesta completa cae al fallback base-100 ≠ vivo), sensibilidad spread s∈{0.20,0.30,0.40}.
+### Documentación final
+- `PLAN-FABLE.md` → actualizar estado (fases completadas).
+- Vault: `ideas/mejoras-sistema-trading.md` (backlog con /obsidian-markdown).
+- Memoria de Claude (project_trading).
+- `ESTADO-SISTEMA.md` NO se toca (auto-generado).
 
----
-
-## FASE C — Sesgo direccional (P2)
-
-1. Con el HistoricalConnector: distribución BULLISH/BEARISH/NEUTRAL de `compute_directional_bias(df_h4)` (`analysis/trend_filter.py`) por día de jun–jul vs precio real del oro. ¿Oro realmente bajista o bias sesgado/lagueado?
-2. % de candidatos BUY muertos en cada gate (counter_trend_veto, OB alineado, sweeps) con el modo candidatos + `last_discard`.
-3. Quick-win: persistir en `signals` las confluencias hoy NO guardadas: `dxy_aligned`, `mtf_aligned`, `macro_bias`, componentes RSI/OB/news/estructura, `tpo_score` (migración ALTER en `init_database`; el INSERT está en `main.save_signal` ~L218).
-4. Informe causa raíz + corrección SOLO si valida en 2 años con el backtester unificado. NO tocar el bias en vivo sin eso.
-
-## FASE D — Resto P3
-
-1. Job ML semanal: `meta_labeling --dedup` NO puede correr con el bot vivo (MT5) → correrlo el sábado (mercado cerrado) vía script/recordatorio Telegram; avisar cuando pase el guardarraíl (expectancia OOS >0.05R manteniendo ≥40% señales).
-2. Auditoría DAYTRADE M15 (vivo dedup WR 28.6% vs backtest 41%): re-backtest `daytrade_backtester.py` en 2 ventanas; si no pasa guardarraíles → proponer `daytrade.enabled: false` (informar al usuario antes).
-3. Medir falsos positivos del dedup (§9 PLAN-FABLE): ¿cuántas velas H1 tienen 2 setups legítimos misma dirección? (probablemente ~0).
-
-## Reglas de cierre
-
-- Todo cambio de estrategia: doble ventana (IS 365→0 + OOS 730→365) + guardarraíles `optimize.better()` (PF≥+0.05, ret≥+8pp, DD≤+2pp, ≥70% trades). Lo que no pase → documentar y descartar.
-- Al final: actualizar `PLAN-FABLE.md` (estado), backlog del vault `ideas/mejoras-sistema-trading.md` (con /obsidian-markdown), memoria de Claude. `ESTADO-SISTEMA.md` NO se toca (auto-generado).
-- Plan completo aprobado también en: `C:\Users\geost\.claude\plans\aqui-esta-todo-docuemntado-effervescent-parrot.md`
+## Notas operativas de la sesión 04-07
+- El bot estaba CAÍDO desde el 03-07 22:20 (apagón del PC, log cortado a mitad de
+  ciclo). MT5 también cerrado; `mt5.initialize()` lo relanza solo.
+- El PC estaba con racha de 4 pérdidas y límite DD semanal (training_mode sigue
+  ejecutando). Junio fue un mes malo también en el unified (WR 25% PF 0.59).
+- El digest de --test manda "SISTEMA ACTIVO" a Telegram — normal, no es el bot vivo.
+- IDE marca "Cannot find module MetaTrader5/schedule" — intérprete del IDE distinto;
+  el de producción compila todo OK. Ignorar.
