@@ -128,6 +128,16 @@ Aceptación: 0 filas en 48 h de mercado abierto. También revisar `sent_signals`
   watchdog lo revivió en <10 s). Apagado intencionado: `DETENER.bat` crea
   `logs/watchdog.pause` (el watchdog NO relanza); `INICIAR.bat` la borra.
   Gestión: `schtasks /Query /TN TradingBotWatchdog` · `/Delete ... /F` para quitar.
+  ⚠️ **Fix 2026-07-05:** la tarea creada con `schtasks /Create` quedó ROTA
+  (escapado de comillas corrompió la ruta del .ps1 → fallo -196608). Recreada con
+  `Register-ScheduledTask` nativo (+ StartWhenAvailable, AllowStartIfOnBatteries,
+  límite 5 min). Receta completa en el header de `watchdog.ps1`.
+  Disparo programado verificado OK (00:17:54, resultado 0), PERO la tarea se
+  **auto-deshabilitó 2 veces** (sin detección Defender; log TaskScheduler apagado).
+  Re-habilitada + vigilancia 25 min en curso. **SI VUELVE A DESHABILITARSE:**
+  plan B = watcher persistente en shell:startup (bucle PowerShell cada 10 min),
+  sin Task Scheduler. Comprobar en la próxima sesión:
+  `(Get-ScheduledTask -TaskName TradingBotWatchdog).State` debe ser Ready.
 - **Ablación de confluencias** (`backtest/confluence_report.py` NUEVO, read-only,
   sobre los trades ejecutados de los runs cand IS+OOS, n≈70/ventana):
   - `m15_aligned` **AYUDA en ambas** (+21% / +6% WR) · `rsi_extremo` **AYUDA en
