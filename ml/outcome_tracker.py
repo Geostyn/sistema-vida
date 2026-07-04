@@ -74,6 +74,7 @@ class OutcomeTracker:
         Returns:
           ("OPEN", 0)            — orden pendiente o posición aún abierta
           ("WIN"|"LOSS", pnl)    — posición cerrada, P&L real con comisiones
+          ("SCRATCH", pnl)       — cierre ~0 (auto-BE): no cuenta para el WR
           ("EXPIRED", 0)         — orden LIMIT expiró sin ejecutarse
           None                   — sin ticket o sin info → usar fallback velas
         """
@@ -107,6 +108,13 @@ class OutcomeTracker:
 
                 # Posición ejecutada y cerrada → P&L real total
                 pnl = sum(d.profit + d.commission + d.swap + d.fee for d in deals)
+                # Cierres por auto-BE: la comisión convierte el scratch en
+                # micro-pérdida e inflaba LOSS → categoría SCRATCH propia
+                # (excluida del WR, como EXPIRED — coherente con el backtest)
+                volume = sum(d.volume for d in entry_deals)
+                comm   = float(self.config.get("risk", {}).get("commission_per_lot", 7.0))
+                if abs(pnl) <= 1.5 * comm * max(volume, 0.01):
+                    return ("SCRATCH", float(pnl))
                 return ("WIN" if pnl > 0 else "LOSS", float(pnl))
 
             # Sin orden, sin posición, sin deals → la LIMIT expiró sin fill
@@ -155,13 +163,22 @@ class OutcomeTracker:
 
         # Señales DAYTRADE: resolver con velas M15 (SL/TP cortos caben
         # dentro de una sola vela H1) y horizonte intradía propio
-        is_dt  = (signal.get("model") == "DAYTRADE")
-        dt_cfg = self.config.get("daytrade", {}) or {}
+        is_dt    = (signal.get("model") == "DAYTRADE")
+        is_swing = (signal.get("model") == "SWING")
+        dt_cfg   = self.config.get("daytrade", {}) or {}
+        sw_cfg   = self.config.get("swing", {}) or {}
         if is_dt:
             timeframe = "M15"
             n_bars    = 400
             fill_bars = int(dt_cfg.get("expiry_bars_m15", 16))
             max_bars  = int(dt_cfg.get("max_outcome_bars_m15", 96))
+        elif is_swing:
+            # Señales SWING (hold 2-7 días): velas H4 y horizonte propio —
+            # con el default H1/150 barras expiraban antes de resolverse
+            timeframe = "H4"
+            n_bars    = 300
+            fill_bars = None
+            max_bars  = int(sw_cfg.get("max_outcome_bars_h4", 60))
         else:
             timeframe = "H1"
             n_bars    = 200
@@ -242,7 +259,7 @@ class OutcomeTracker:
             capital    = float(
                 self.config.get("risk", {}).get("capital", 100000.0)
             )
-            if real_pnl is not None and outcome in ("WIN", "LOSS"):
+            if real_pnl is not None and outcome in ("WIN", "LOSS", "SCRATCH"):
                 # P&L real de MT5 (comisiones, parciales y trailing incluidos)
                 pnl_amount = float(real_pnl)
                 pnl_pct    = (pnl_amount / capital) * 100 if capital > 0 else 0.0
@@ -398,10 +415,11 @@ class OutcomeTracker:
                     SUM(CASE WHEN outcome='WIN'     THEN 1 ELSE 0 END) as wins,
                     SUM(CASE WHEN outcome='LOSS'    THEN 1 ELSE 0 END) as losses,
                     SUM(CASE WHEN outcome='EXPIRED' THEN 1 ELSE 0 END) as expired,
+                    SUM(CASE WHEN outcome='SCRATCH' THEN 1 ELSE 0 END) as scratches,
                     AVG(CASE WHEN outcome='WIN' THEN rr ELSE NULL END) as avg_rr_win,
                     AVG(confidence) as avg_confidence
                 FROM signals
-                WHERE outcome IN ('WIN', 'LOSS', 'EXPIRED')
+                WHERE outcome IN ('WIN', 'LOSS', 'EXPIRED', 'SCRATCH')
             """)
             row = cursor.fetchone()
             conn.close()
@@ -409,13 +427,14 @@ class OutcomeTracker:
             if not row or row[0] == 0:
                 return {"total": 0, "win_rate": 0, "profit_factor": 0}
 
-            total   = row[0]
-            wins    = row[1] or 0
-            losses  = row[2] or 0
-            expired = row[3] or 0
-            avg_rr  = row[4] or 2.0
+            total     = row[0]
+            wins      = row[1] or 0
+            losses    = row[2] or 0
+            expired   = row[3] or 0
+            scratches = row[4] or 0
+            avg_rr    = row[5] or 2.0
 
-            closed = wins + losses  # EXPIRED no cuenta para WR
+            closed = wins + losses  # EXPIRED y SCRATCH no cuentan para WR
             win_rate      = wins / closed if closed > 0 else 0
             profit_factor = (wins * avg_rr) / losses if losses > 0 else float("inf")
 
@@ -424,6 +443,7 @@ class OutcomeTracker:
                 "wins":          wins,
                 "losses":        losses,
                 "expired":       expired,
+                "scratches":     scratches,
                 "win_rate":      round(win_rate, 3),
                 "profit_factor": round(profit_factor, 2),
                 "avg_rr_win":    round(avg_rr, 2),

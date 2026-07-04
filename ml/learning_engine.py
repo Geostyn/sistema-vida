@@ -233,6 +233,14 @@ class LearningEngine:
         if len(rows) < MIN_TRADES_TO_TRAIN:
             return (None, None, None) if with_weights else (None, None)
 
+        # Orden temporal GLOBAL (vivo + backtest mezclados). Sin esto el CV
+        # temporal no sirve: el backtest quedaba concatenado DESPUÉS del vivo
+        # y los folds mezclaban pasado y futuro (fuga look-ahead).
+        def _ts_key(d: dict):
+            t = pd.to_datetime(d.get("timestamp"), errors="coerce", utc=True)
+            return t if pd.notna(t) else pd.Timestamp.min.tz_localize("UTC")
+        rows.sort(key=lambda item: _ts_key(item[0]))
+
         X = np.array([self._extract_features(d) for d, _, _ in rows], dtype=float)
         y = np.array([1 if o == "WIN" else 0 for _, o, _ in rows])
         w = np.array([wt for _, _, wt in rows], dtype=float)
@@ -249,7 +257,7 @@ class LearningEngine:
         from sklearn.neural_network import MLPClassifier
         from sklearn.pipeline import make_pipeline
         from sklearn.preprocessing import StandardScaler
-        from sklearn.model_selection import cross_val_score
+        from sklearn.model_selection import cross_val_score, TimeSeriesSplit
 
         X, y, w = self._load_training_data(with_weights=True)
         if X is None:
@@ -297,7 +305,12 @@ class LearningEngine:
                 except Exception:
                     clf.fit(X, y)
                 if n_trades >= cv_folds * 3:
-                    scores = cross_val_score(clf, X, y, cv=cv_folds, scoring="accuracy")
+                    # CV temporal: entrena en pasado y valida en futuro.
+                    # cv=int era StratifiedKFold → mezclaba futuro en train (fuga).
+                    scores = cross_val_score(
+                        clf, X, y, cv=TimeSeriesSplit(n_splits=cv_folds),
+                        scoring="accuracy",
+                    )
                     acc    = float(scores.mean())
                 else:
                     acc = float(np.mean(y == clf.predict(X)))

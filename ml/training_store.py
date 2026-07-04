@@ -94,24 +94,27 @@ def load_samples(db_path: str, source: str | None = None) -> list[dict]:
     try:
         if source:
             rows = conn.execute(
-                "SELECT outcome, source, features_json FROM training_samples WHERE source=?",
+                "SELECT outcome, source, features_json, timestamp FROM training_samples WHERE source=?",
                 (source,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT outcome, source, features_json FROM training_samples"
+                "SELECT outcome, source, features_json, timestamp FROM training_samples"
             ).fetchall()
     finally:
         conn.close()
 
     out = []
-    for outcome, src, fj in rows:
+    for outcome, src, fj, ts in rows:
         try:
             feats = json.loads(fj) if fj else {}
         except Exception:
             feats = {}
         feats["outcome"] = outcome
         feats["source"] = src
+        # timestamp de la columna (para orden temporal global en el CV);
+        # el del features_json manda si ya existe
+        feats.setdefault("timestamp", ts)
         out.append(feats)
     return out
 

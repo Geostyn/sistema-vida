@@ -88,6 +88,12 @@ def init_database(db_path: str):
     conn   = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # WAL: el bot escribe mientras dashboard/skills leen la misma DB.
+    # Sin WAL, un lector podía bloquear las escrituras ("database is locked").
+    # journal_mode=WAL es persistente (queda grabado en el fichero .db).
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signals (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -198,6 +204,14 @@ def init_database(db_path: str):
         )
     """)
 
+    # Estado persistente del bot (guards de digest/reporte semanal, etc.)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
     # Índices para acelerar las consultas de stats/outcome/risk cuando la
     # tabla signals crece (antes: full scan en cada /status, risk, ML).
     for idx_sql in (
@@ -296,7 +310,7 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
 
 
 def _get_trade_stats(db_path: str) -> dict:
-    """Lee estadísticas de trades desde SQLite. EXPIRED no cuenta como LOSS en WR/PF."""
+    """Lee estadísticas de trades desde SQLite. EXPIRED y SCRATCH no cuentan en WR/PF."""
     try:
         conn = sqlite3.connect(db_path)
         cur  = conn.cursor()
@@ -310,23 +324,25 @@ def _get_trade_stats(db_path: str) -> dict:
         cur.execute("SELECT COALESCE(ABS(SUM(pnl_amount)),0) FROM signals WHERE outcome='LOSS'")
         gross_loss = cur.fetchone()[0]
         conn.close()
-        wins_n,   wins_pnl   = by_outcome.get("WIN",     (0, 0))
-        losses_n, losses_pnl = by_outcome.get("LOSS",    (0, 0))
-        expired_n             = by_outcome.get("EXPIRED", (0, 0))[0]
-        pending_n             = by_outcome.get("PENDING", (0, 0))[0]
-        closed = wins_n + losses_n  # EXPIRED excluido
+        wins_n,    wins_pnl    = by_outcome.get("WIN",     (0, 0))
+        losses_n,  losses_pnl  = by_outcome.get("LOSS",    (0, 0))
+        scratch_n, scratch_pnl = by_outcome.get("SCRATCH", (0, 0))
+        expired_n              = by_outcome.get("EXPIRED", (0, 0))[0]
+        pending_n              = by_outcome.get("PENDING", (0, 0))[0]
+        closed = wins_n + losses_n  # EXPIRED y SCRATCH excluidos
         return {
-            "wins":    wins_n,
-            "losses":  losses_n,
-            "expired": expired_n,
-            "pending": pending_n,
-            "pnl_total":     wins_pnl + losses_pnl,
+            "wins":      wins_n,
+            "losses":    losses_n,
+            "scratches": scratch_n,
+            "expired":   expired_n,
+            "pending":   pending_n,
+            "pnl_total":     wins_pnl + losses_pnl + scratch_pnl,
             "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else 0,
             "wr_str": f"{wins_n/closed:.1%}" if closed > 0 else "sin cierres",
             "recent": recent,
         }
     except Exception:
-        return {"wins": 0, "losses": 0, "expired": 0, "pending": 0,
+        return {"wins": 0, "losses": 0, "scratches": 0, "expired": 0, "pending": 0,
                 "pnl_total": 0, "profit_factor": 0, "wr_str": "sin datos", "recent": []}
 
 
@@ -422,7 +438,7 @@ tags:
 - Entry retroceso OB + BE@1R + parcial 50%@TP1 + trailing runner (64 trades salvados por BE)
 
 ## Rendimiento en vivo
-- WIN: {st['wins']} | LOSS: {st['losses']} | EXPIRED: {st.get('expired',0)} | PENDING: {st['pending']}
+- WIN: {st['wins']} | LOSS: {st['losses']} | SCRATCH: {st.get('scratches',0)} | EXPIRED: {st.get('expired',0)} | PENDING: {st['pending']}
 - Win Rate real: **{st['wr_str']}** | PF: {pf_str} | P&L: {pnl_str}
 {recent_lines}
 
@@ -468,14 +484,14 @@ def update_obsidian_demo_log(config: dict, db_path: str):
         cur.execute("""
             SELECT DATE(timestamp), symbol, direction, outcome, pnl_amount, rr, confidence
             FROM signals
-            WHERE outcome IN ('WIN','LOSS')
+            WHERE outcome IN ('WIN','LOSS','SCRATCH')
             ORDER BY timestamp ASC
         """)
         closed = cur.fetchall()
-        # Estadísticas globales
+        # Estadísticas globales (WR solo WIN/LOSS; SCRATCH suma al P&L)
         cur.execute("SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM signals WHERE outcome IN ('WIN','LOSS')")
         total_closed, total_wins = cur.fetchone()
-        cur.execute("SELECT COALESCE(SUM(pnl_amount),0) FROM signals WHERE outcome IN ('WIN','LOSS')")
+        cur.execute("SELECT COALESCE(SUM(pnl_amount),0) FROM signals WHERE outcome IN ('WIN','LOSS','SCRATCH')")
         total_pnl = cur.fetchone()[0]
         cur.execute("SELECT COALESCE(SUM(pnl_amount),0) FROM signals WHERE outcome='WIN'")
         gross_win = cur.fetchone()[0]
@@ -527,7 +543,7 @@ def update_obsidian_demo_log(config: dict, db_path: str):
         date_str, sym, direc, outcome, pnl, rr, conf = row
         pnl_v   = float(pnl or 0)
         pnl_fmt = f"+€{pnl_v:,.0f}" if pnl_v >= 0 else f"-€{abs(pnl_v):,.0f}"
-        emoji   = "✅" if outcome == "WIN" else "❌"
+        emoji   = "✅" if outcome == "WIN" else ("➖" if outcome == "SCRATCH" else "❌")
         trades_log += f"| {date_str} | {sym} | {direc} | {emoji} {outcome} | {pnl_fmt} | 1:{float(rr or 2):.1f} |\n"
 
     # Leer el archivo actual
@@ -687,7 +703,10 @@ class TradingSystem:
         self._cycle_count = 0
         self._autotrading_warned = False
         self._known_positions = set()  # tickets de posiciones abiertas
-        self._last_digest_date = None  # guard "1 digest al día" (hora UTC)
+        # Guard "1 digest al día" — persistido en bot_meta para no reenviar
+        # el digest si el bot reinicia después de las 21:00 UTC
+        self._last_digest_date = None
+        self._last_weekly_key  = None  # guard "1 reporte semanal" (semana ISO)
 
     def start(self):
         """Inicializa conexiones y verifica el setup."""
@@ -895,7 +914,7 @@ class TradingSystem:
                 f"📊 <b>Estado del Sistema</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"✅ WIN: {stats['wins']}  ❌ LOSS: {stats['losses']}  "
-                f"⏰ EXP: {stats.get('expired',0)}  ⏳ PEND: {stats['pending']}\n"
+                f"➖ BE: {stats.get('scratches',0)}  ⏰ EXP: {stats.get('expired',0)}  ⏳ PEND: {stats['pending']}\n"
                 f"📈 Win Rate: <b>{stats['wr_str']}</b> | PF: {stats['profit_factor']}\n"
                 f"💰 P&L total: {stats['pnl_total']:+.0f}€\n\n"
                 f"🎯 Riesgo activo: {risk_str}{risk_note}\n"
@@ -1630,6 +1649,9 @@ class TradingSystem:
         # ── Digest diario (resumen + análisis LLM) a la hora UTC configurada ──
         self._maybe_send_daily_digest()
 
+        # ── Reporte semanal (domingo ≥ 18:00 UTC, gate propio) ──
+        self._maybe_send_weekly_report()
+
         # ── FundedNext 2K: aplicar resultados resueltos al equity simulado ──
         # Solo si la cuenta de fondeo está activa (desactivada 2026-06-17)
         if self.config.get("funded", {}).get("enabled", False):
@@ -1802,17 +1824,46 @@ class TradingSystem:
             f"ejecutar la próxima señal."
         )
 
+    # ── Estado persistente (tabla bot_meta) ─────────────────────────
+
+    def _get_meta(self, key: str) -> str | None:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            row  = conn.execute("SELECT value FROM bot_meta WHERE key=?", (key,)).fetchone()
+            conn.close()
+            return row[0] if row else None
+        except Exception:
+            return None
+
+    def _set_meta(self, key: str, value: str):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute(
+                "INSERT INTO bot_meta(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"bot_meta set {key}: {e}")
+
     def _maybe_send_daily_digest(self):
         """Envía UN digest diario (resumen + análisis LLM) a la hora UTC
-        configurada. Guard por fecha para no repetir. No bloquea el ciclo si
-        falla (fail-safe dentro de build_digest)."""
+        configurada. Guard por fecha PERSISTIDO en bot_meta — antes vivía solo
+        en memoria y un reinicio después de las 21:00 UTC reenviaba el digest.
+        No bloquea el ciclo si falla (fail-safe dentro de build_digest)."""
         acfg = self.config.get("alerts", {})
         if not acfg.get("daily_digest_enabled", True):
             return
         now = datetime.now(timezone.utc)
         hour_target = int(acfg.get("daily_digest_hour_utc", 21))
         today = now.strftime("%Y-%m-%d")
-        if now.hour < hour_target or self._last_digest_date == today:
+        if now.hour < hour_target:
+            return
+        if self._last_digest_date is None:
+            self._last_digest_date = self._get_meta("last_digest_date")
+        if self._last_digest_date == today:
             return
         try:
             from alerts.daily_digest import build_digest
@@ -1825,11 +1876,28 @@ class TradingSystem:
                 pass
             msg = build_digest(self.config, self.db_path, news_ctx=news_ctx)
             self.telegram.send_message(msg)
-            self._last_digest_date = today
             logger.info("Digest diario enviado a Telegram")
         except Exception as e:
             logger.warning(f"Digest diario error: {e}")
-            self._last_digest_date = today  # no reintentar en bucle si algo falla
+        # En éxito o fallo: marcar el día (no reintentar en bucle)
+        self._last_digest_date = today
+        self._set_meta("last_digest_date", today)
+
+    def _maybe_send_weekly_report(self):
+        """Domingo ≥ 18:00 UTC, una vez por semana ISO. Sustituye a
+        schedule.every().sunday.at('18:00'), que usaba la hora LOCAL del PC
+        (inconsistente con el resto del bot, todo en UTC). Guard persistido."""
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 6 or now.hour < 18:
+            return
+        week_key = now.strftime("%G-W%V")
+        if self._last_weekly_key is None:
+            self._last_weekly_key = self._get_meta("last_weekly_report")
+        if self._last_weekly_key == week_key:
+            return
+        self._send_weekly_report()
+        self._last_weekly_key = week_key
+        self._set_meta("last_weekly_report", week_key)
 
     def _send_weekly_report(self):
         """Genera y envía el reporte semanal de rendimiento a Telegram."""
@@ -1874,7 +1942,8 @@ class TradingSystem:
         self.run_cycle()  # Primer ciclo inmediato
 
         schedule.every(refresh).seconds.do(self.run_cycle)
-        schedule.every().sunday.at("18:00").do(self._send_weekly_report)
+        # Reporte semanal: gate UTC propio dentro de run_cycle
+        # (_maybe_send_weekly_report) — schedule.sunday usaba hora LOCAL
 
         logger.info(f"Loop activo — análisis cada {refresh}s")
         logger.info("Para el dashboard abre otra terminal y ejecuta:")

@@ -41,7 +41,9 @@ def _get_yf_session():
 
 _YF_SESSION = _get_yf_session()
 
-CACHE_MINUTES = 60
+CACHE_MINUTES     = 60
+FAIL_COOLDOWN_MIN = 5   # Tras un fallo de descarga, NO reintentar hasta pasados 5 min
+                        # (patrón macro_feed: antes refetch cada ciclo → prolongaba el baneo)
 
 
 class VolumeProfileEngine:
@@ -56,6 +58,7 @@ class VolumeProfileEngine:
         self.va_pct      = float(self.config.get("value_area_pct", 0.70))
         self._cache      = None
         self._cache_time = None
+        self._fail_time  = None  # último fallo de descarga (cooldown de reintento)
         # Caché en disco: sobrevive reinicios y evita depender de yfinance al
         # arrancar (mismo patrón que intermarket_feed).
         self._cache_file = os.path.join(
@@ -183,17 +186,28 @@ class VolumeProfileEngine:
                 result = self._apply_spot_ratio(result, spot_price)
             return result
 
+        # Cooldown tras fallo: servir caché stale sin martillear Yahoo
+        if self._fail_time is not None and \
+           (datetime.now(timezone.utc) - self._fail_time).total_seconds() < FAIL_COOLDOWN_MIN * 60:
+            result = dict(self._cache) if self._cache else {}
+            if spot_price and result.get("poc"):
+                result = self._apply_spot_ratio(result, spot_price)
+            return result
+
         df = self._fetch_comex_data()
         if df.empty:
             logger.warning("VP: sin datos COMEX — usando cache anterior")
+            self._fail_time = datetime.now(timezone.utc)
             return self._cache or {}
 
         profile = self._calculate_profile(df)
         if not profile:
+            self._fail_time = datetime.now(timezone.utc)
             return self._cache or {}
 
         self._cache      = profile
         self._cache_time = datetime.now(timezone.utc)
+        self._fail_time  = None
         self._save_disk_cache(profile)
 
         logger.info(

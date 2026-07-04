@@ -1267,6 +1267,7 @@ class SignalEngine:
             "confluence_details": cf_details,
             "timeframe":          "H4",
             "mode":               "SWING",
+            "model":              "SWING",
             "hold_estimate":      hold_est,
             "bias_h4":            bias,
             "structure_h1":       struct_h4["trend"],

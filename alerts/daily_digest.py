@@ -35,9 +35,9 @@ def gather_stats(db_path: str, day: str | None = None) -> dict:
     """Cifras objetivas de los trades CERRADOS en `day` (UTC, por defecto hoy)."""
     day = day or _today_utc()
     out = {
-        "day": day, "closed": 0, "wins": 0, "losses": 0, "pnl": 0.0,
-        "buys": 0, "sells": 0, "best_hour": None, "worst_hour": None,
-        "pending": 0, "by_hour": [],
+        "day": day, "closed": 0, "wins": 0, "losses": 0, "scratches": 0,
+        "pnl": 0.0, "buys": 0, "sells": 0, "best_hour": None,
+        "worst_hour": None, "pending": 0, "by_hour": [],
     }
     try:
         conn = sqlite3.connect(db_path, timeout=5)
@@ -46,7 +46,7 @@ def gather_stats(db_path: str, day: str | None = None) -> dict:
             "SELECT direction, outcome, COALESCE(pnl_amount,0), "
             "       CAST(strftime('%H', timestamp) AS INT) AS hh "
             "FROM signals "
-            "WHERE DATE(timestamp)=? AND outcome IN ('WIN','LOSS')",
+            "WHERE DATE(timestamp)=? AND outcome IN ('WIN','LOSS','SCRATCH')",
             (day,),
         ).fetchall()
         out["pending"] = cur.execute(
@@ -64,12 +64,17 @@ def gather_stats(db_path: str, day: str | None = None) -> dict:
         out["pnl"]    += float(pnl or 0)
         if outcome == "WIN":
             out["wins"] += 1
+        elif outcome == "SCRATCH":
+            out["scratches"] += 1
         else:
             out["losses"] += 1
         if str(direction).upper().startswith("B"):
             out["buys"] += 1
         else:
             out["sells"] += 1
+        # SCRATCH (cierre BE ~0) no cuenta para el WR por hora
+        if outcome == "SCRATCH":
+            continue
         per_hour.setdefault(int(hh), [0, 0])
         per_hour[int(hh)][0 if outcome == "WIN" else 1] += 1
 
@@ -92,11 +97,13 @@ def _factual_text(s: dict) -> str:
         return (f"📊 <b>RESUMEN DEL DÍA — {s['day']}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"Sin trades cerrados hoy. Pendientes: {s['pending']}.")
-    wr = s["wins"] / s["closed"] if s["closed"] else 0
+    decided = s["wins"] + s["losses"]  # SCRATCH fuera del WR
+    wr = s["wins"] / decided if decided else 0
+    scratch_str = f" / ➖ {s['scratches']} BE" if s.get("scratches") else ""
     lines = [
         f"📊 <b>RESUMEN DEL DÍA — {s['day']}</b>",
         "━━━━━━━━━━━━━━━━━━━━━━",
-        f"Cerrados: <b>{s['closed']}</b>  (✅ {s['wins']} / ❌ {s['losses']})  "
+        f"Cerrados: <b>{s['closed']}</b>  (✅ {s['wins']} / ❌ {s['losses']}{scratch_str})  "
         f"WR <b>{wr:.0%}</b>",
         f"P&L: <b>{s['pnl']:+,.0f}</b>   |   Pendientes: {s['pending']}",
         f"Dirección: {s['buys']} BUY / {s['sells']} SELL",
@@ -115,9 +122,11 @@ def _llm_comment(config: dict, s: dict, news_ctx: str = "") -> str:
     if not key or s["closed"] == 0:
         return ""
     model = config.get("groq", {}).get("model", _DEFAULT_MODEL)
-    wr = s["wins"] / s["closed"] if s["closed"] else 0
+    decided = s["wins"] + s["losses"]
+    wr = s["wins"] / decided if decided else 0
     facts = (
-        f"Trades cerrados hoy: {s['closed']} (WR {wr:.0%}, {s['wins']}W/{s['losses']}L). "
+        f"Trades cerrados hoy: {s['closed']} (WR {wr:.0%}, {s['wins']}W/{s['losses']}L"
+        f"{', ' + str(s.get('scratches', 0)) + ' breakeven' if s.get('scratches') else ''}). "
         f"PnL {s['pnl']:+.0f}. Dirección {s['buys']} BUY / {s['sells']} SELL. "
         f"Mejor hora {s['best_hour'][0] if s['best_hour'] else '?'}h, "
         f"peor {s['worst_hour'][0] if s['worst_hour'] else '?'}h. "

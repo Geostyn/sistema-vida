@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_PATH = os.path.join(_PROJECT_ROOT, "logs", "intermarket_cache.json")
 
+FAIL_COOLDOWN_MIN = 5   # Tras un fallo de una fuente, NO reintentarla hasta pasados
+                        # 5 min (patrón macro_feed: evita refetch cada ciclo en caídas)
+
 # Sesión yfinance con SSL desactivado (mismo patrón que macro_feed)
 def _make_yf_session():
     try:
@@ -77,6 +80,7 @@ class IntermarketFeed:
         }
         self._yf = _make_yf_session()
         self._cache = self._load_cache()
+        self._fail_ts: dict = {}  # key → datetime del último fallo (cooldown)
 
     # ── Caché en disco ──────────────────────────────────────────────
 
@@ -119,6 +123,14 @@ class IntermarketFeed:
         entry = self._cache.get(key)
         return entry["data"] if entry else None
 
+    def _in_fail_cooldown(self, key: str) -> bool:
+        ts = self._fail_ts.get(key)
+        return ts is not None and \
+            (datetime.now(timezone.utc) - ts).total_seconds() < FAIL_COOLDOWN_MIN * 60
+
+    def _mark_fail(self, key: str):
+        self._fail_ts[key] = datetime.now(timezone.utc)
+
     # ── 1. Rendimientos reales 10Y ──────────────────────────────────
 
     def get_real_yields(self) -> dict:
@@ -129,6 +141,9 @@ class IntermarketFeed:
         cached = self._cached("real_yields")
         if cached:
             return cached
+        if self._in_fail_cooldown("real_yields"):
+            return self._cached_stale("real_yields") or {
+                "trend": "NEUTRAL", "gold_impact": 0.0, "source": "sin datos"}
 
         data = None
         # --- Primario: FRED DFII10 (real 10Y) ---
@@ -158,6 +173,7 @@ class IntermarketFeed:
                 logger.debug(f"TIP proxy no disponible: {e}")
 
         if data is None:
+            self._mark_fail("real_yields")
             return self._cached_stale("real_yields") or {
                 "trend": "NEUTRAL", "gold_impact": 0.0, "source": "sin datos"}
 
@@ -191,6 +207,9 @@ class IntermarketFeed:
         cached = self._cached("cot")
         if cached:
             return cached
+        if self._in_fail_cooldown("cot"):
+            return self._cached_stale("cot") or {
+                "extreme": "NORMAL", "gold_impact": 0.0, "asof": "sin datos"}
 
         try:
             import requests
@@ -199,7 +218,9 @@ class IntermarketFeed:
             for y in (year, year - 1, year - 2):
                 url = f"https://www.cftc.gov/files/dea/history/deacot{y}.zip"
                 try:
-                    r = requests.get(url, verify=False, timeout=45)
+                    # timeout corto: 3 descargas síncronas en el ciclo del bot —
+                    # con 45 s un CFTC caído bloqueaba el ciclo ~135 s
+                    r = requests.get(url, verify=False, timeout=15)
                     if r.status_code != 200:
                         continue
                     zf = zipfile.ZipFile(io.BytesIO(r.content))
@@ -255,6 +276,7 @@ class IntermarketFeed:
             return data
         except Exception as e:
             logger.debug(f"COT no disponible: {e}")
+            self._mark_fail("cot")
             return self._cached_stale("cot") or {
                 "extreme": "NORMAL", "gold_impact": 0.0, "asof": "sin datos"}
 
@@ -268,6 +290,8 @@ class IntermarketFeed:
         cached = self._cached("ratio")
         if cached:
             return cached
+        if self._in_fail_cooldown("ratio"):
+            return self._cached_stale("ratio") or {"signal": "NEUTRAL", "gold_impact": 0.0}
 
         gold = silver = None
         gold_hist = silver_hist = None
@@ -295,6 +319,7 @@ class IntermarketFeed:
                 logger.debug(f"yfinance oro/plata no disponible: {e}")
 
         if gold_hist is None or silver_hist is None:
+            self._mark_fail("ratio")
             return self._cached_stale("ratio") or {"signal": "NEUTRAL", "gold_impact": 0.0}
 
         try:
@@ -323,6 +348,8 @@ class IntermarketFeed:
         cached = self._cached("risk")
         if cached:
             return cached
+        if self._in_fail_cooldown("risk"):
+            return self._cached_stale("risk") or {"gold_impact": 0.0}
         out = {"gold_impact": 0.0}
         try:
             from data.yf_safe import safe_history
@@ -348,6 +375,7 @@ class IntermarketFeed:
             self._store("risk", out)
         except Exception as e:
             logger.debug(f"Risk basket no disponible: {e}")
+            self._mark_fail("risk")
             return self._cached_stale("risk") or out
         return out
 
