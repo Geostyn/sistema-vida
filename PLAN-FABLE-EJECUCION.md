@@ -116,9 +116,29 @@ FROM signals WHERE timestamp >= '2026-07-04' GROUP BY 1,2 HAVING n > 1;
 Aceptación: 0 filas en 48 h de mercado abierto. También revisar `sent_signals`.
 
 ### Decisiones del usuario
-1. **DAYTRADE M15**: ¿desactivar (`daytrade.enabled: false`)? Recomendado por la
-   auditoría OOS (PF 1.01, DD 30.7%) + vivo (WR 28.6% < BE 33.3%).
+1. ~~DAYTRADE M15~~ → **DESACTIVADO 2026-07-04 ~23:45** (el usuario delegó "haz lo
+   que sea mejor"): `daytrade.enabled: false` con justificación en config.yaml.
+   Reactivar solo si un re-backtest futuro pasa IS+OOS.
 2. Revisar el primer informe `/ml_check` en Telegram (llegará cada sábado).
+
+### Mejoras operativas añadidas (2026-07-04 ~23:45)
+- **WATCHDOG del bot** (`watchdog.ps1` + tarea Windows `TradingBotWatchdog`, cada
+  10 min): si `main.py` (python de producción) no corre, lo relanza minimizado y
+  lo apunta en `logs/watchdog.log`. **Probado end-to-end** (matado el bot → el
+  watchdog lo revivió en <10 s). Apagado intencionado: `DETENER.bat` crea
+  `logs/watchdog.pause` (el watchdog NO relanza); `INICIAR.bat` la borra.
+  Gestión: `schtasks /Query /TN TradingBotWatchdog` · `/Delete ... /F` para quitar.
+- **Ablación de confluencias** (`backtest/confluence_report.py` NUEVO, read-only,
+  sobre los trades ejecutados de los runs cand IS+OOS, n≈70/ventana):
+  - `m15_aligned` **AYUDA en ambas** (+21% / +6% WR) · `rsi_extremo` **AYUDA en
+    ambas** (+7% / +17%) → confluencias con señal real.
+  - `dxy_aligned` **ESTORBA en ambas** (−4% / −10%, n✓ 17/21 pequeño) → único
+    candidato a experimento de pesos futuro; exige validación 2 ventanas antes
+    de tocar nada (NO aplicado).
+  - corr(confluences, pnl_r) = **+0.10 IS / +0.16 OOS** — el score total predice
+    débil pero positivo (coherente con el barrido: umbral alto ⇒ PF alto).
+  - Resto (sweep, fvg, pairs, regime, adx) = mixto/neutro entre ventanas = ruido
+    o muestra corta. No tocar pesos con esta n.
 
 ### Ideas para próximas sesiones (no urgente)
 - El único patrón interesante del barrido: t≥7.0 offline (≈7.7 vivo) sube PF en ambas

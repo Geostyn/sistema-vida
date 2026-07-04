@@ -7,6 +7,9 @@ echo.
 echo  Apagando el sistema de trading...
 echo.
 
+:: Pausar el watchdog (apagado intencionado - que NO relance el bot)
+echo pausado > logs\watchdog.pause
+
 :: Avisar a Telegram antes de matar los procesos
 echo  Enviando mensaje de sistema inactivo a Telegram...
 python enviar_inactivo.py
