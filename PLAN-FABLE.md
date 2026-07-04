@@ -115,6 +115,7 @@ PYTHONIOENCODING=utf-8 "$PY" backtest/neural_eval.py       # validar LSTM OOS
 | ORB/breakout standalone | ❌ No robusto | Gana en tendencia, pierde en rango (espejo del bot). |
 | Plata / forex / índices | ❌ No generaliza | El edge SMC/OB es específico del oro. |
 | `atr_sl=1.7`, parcial ≠ 0.3, trail ≠ 2.0 | ❌ | `optimize.py` confirma que lo actual es óptimo. |
+| Quitar el peso DXY del score (`correlation.dxy_confluence_weight: 0`) | ❌ NO (2026-07-05, unified 2 ventanas) | La ablación decía que dxy_aligned correlaciona negativo, pero quitar el +1.5: IS mejora (PF 1.96→2.02) y OOS EMPEORA (PF 1.47→1.41, ret 18.3→14.9%, DD 10→12.3%). Curve-fitting clásico. El knob queda en código (default 1.5) por si se re-testea con más historia. |
 
 **Regla meta:** los knobs de scoring/entrada del VIVO (`min_confluences`, `min_rr`, pesos de
 confluencia, ML) **NO son validables con el backtester actual** (ver §6.1). No los "optimices"

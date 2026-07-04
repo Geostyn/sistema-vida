@@ -409,8 +409,13 @@ class SignalEngine:
         if last_ev and last_ev["direction"] == bias:
             confluences += 1; cf_details.append(f"{last_ev['type']} H1")
 
-        if dxy_aligned and corr_context:
-            confluences += 1.5; cf_details.append(f"DXY alineado {corr_context['dxy']['trend']}")
+        # Peso DXY configurable (correlation.dxy_confluence_weight, default 1.5).
+        # Ablación 2026-07-04 (confluence_report.py): dxy_aligned correlaciona
+        # NEGATIVO con ganar en ambas ventanas → knob para validar reducirlo.
+        dxy_w = float(self.config.get("correlation", {})
+                      .get("dxy_confluence_weight", 1.5))
+        if dxy_aligned and corr_context and dxy_w > 0:
+            confluences += dxy_w; cf_details.append(f"DXY alineado {corr_context['dxy']['trend']}")
 
         if pairs_score >= 0.6:
             confluences += 1;   cf_details.append(f"Pares confirmados ({pairs_score:.0%})")
@@ -1099,8 +1104,10 @@ class SignalEngine:
         if not news_stat["blackout"]:
             confluences += 1; cf_details.append("Sin noticias ±2h")
 
-        if dxy_aligned and corr_context:
-            confluences += 1.5; cf_details.append(
+        dxy_w = float(self.config.get("correlation", {})
+                      .get("dxy_confluence_weight", 1.5))
+        if dxy_aligned and corr_context and dxy_w > 0:
+            confluences += dxy_w; cf_details.append(
                 f"DXY alineado {corr_context['dxy']['trend']}")
 
         if pairs_score >= 0.6:

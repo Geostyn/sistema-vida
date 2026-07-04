@@ -135,6 +135,12 @@ Aceptación: 0 filas en 48 h de mercado abierto. También revisar `sent_signals`
   - `dxy_aligned` **ESTORBA en ambas** (−4% / −10%, n✓ 17/21 pequeño) → único
     candidato a experimento de pesos futuro; exige validación 2 ventanas antes
     de tocar nada (NO aplicado).
+  - **EXPERIMENTO EJECUTADO (2026-07-05, pedido del usuario): NO-GO.** Knob nuevo
+    `correlation.dxy_confluence_weight` (default 1.5 = idéntico) + `--set` genérico
+    en unified_backtester. Peso 0 en 2 ventanas: IS PF 1.96→2.02 ✓ pero
+    **OOS PF 1.47→1.41 / ret 18.3→14.9% / DD 10→12.3% ✗✗✗** → curve-fitting,
+    descartado (añadido a trampas §4 de PLAN-FABLE.md). El peso 1.5 SE QUEDA.
+    JSONs: `unified_dxy0_is_*.json` / `unified_dxy0_oos_*.json`.
   - corr(confluences, pnl_r) = **+0.10 IS / +0.16 OOS** — el score total predice
     débil pero positivo (coherente con el barrido: umbral alto ⇒ PF alto).
   - Resto (sweep, fvg, pairs, regime, adx) = mixto/neutro entre ventanas = ruido

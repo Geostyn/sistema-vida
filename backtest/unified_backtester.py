@@ -155,7 +155,8 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
                 min_confluences: float | None = None, candidates: bool = False,
                 spread: float = 0.30, stride_garch: int = 1,
                 record_discards: bool = False, quiet: bool = False,
-                cadence: str = "H1") -> dict:
+                cadence: str = "H1",
+                config_overrides: dict | None = None) -> dict:
     """
     Corre analyze() al CIERRE de cada vela del `cadence` (hora servidor).
     - cadence H1  (default): 1 evaluación/hora — barridos y baseline.
@@ -165,6 +166,14 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
     de la sesión, en cierres H1 exactos, respetando max_simultaneous.
     """
     config = copy.deepcopy(load_config())
+    # Overrides de experimento (--set sec.key=val) — para validar knobs de
+    # scoring SIN tocar config.yaml (el bot vivo podría recargarlo vía watchdog)
+    for dotted, val in (config_overrides or {}).items():
+        node = config
+        keys = dotted.split(".")
+        for k in keys[:-1]:
+            node = node.setdefault(k, {})
+        node[keys[-1]] = val
     # Cachés por reloj de pared contaminan el replay → GARCH siempre fresco
     config.setdefault("quant", {})["garch_cache_min"] = 0
     if min_confluences is not None:
@@ -335,6 +344,7 @@ def run_unified(symbol: str = "XAUUSD", t_from=None, t_to=None, days: int = 30,
         "cadence":    cadence,
         "stride_garch": stride_garch,
         "min_confluences": config["risk"].get("min_confluences"),
+        "config_overrides": config_overrides or {},
         "n_bars":     n,
         "elapsed_s":  round(elapsed, 1),
         "signals":    len(signals_log),
@@ -380,12 +390,24 @@ if __name__ == "__main__":
     ap.add_argument("--discards", action="store_true", help="contar motivos de descarte")
     ap.add_argument("--cadence", default="H1", choices=["H1", "M15", "h1", "m15"])
     ap.add_argument("--tag", default="")
+    ap.add_argument("--set", action="append", default=[], metavar="sec.key=val",
+                    help="override de config (repetible), ej: "
+                         "--set correlation.dxy_confluence_weight=0")
     args = ap.parse_args()
+
+    overrides = {}
+    for item in args.set:
+        key, _, raw = item.partition("=")
+        try:
+            val = float(raw)
+        except ValueError:
+            val = {"true": True, "false": False}.get(raw.lower(), raw)
+        overrides[key.strip()] = val
 
     res = run_unified(symbol=args.symbol, t_from=args.t_from, t_to=args.t_to,
                       days=args.days, min_confluences=args.min_confluences,
                       candidates=args.candidates, spread=args.spread,
                       stride_garch=args.stride_garch, record_discards=args.discards,
-                      cadence=args.cadence)
+                      cadence=args.cadence, config_overrides=overrides)
     path = save_results(res, args.tag)
     print(f"Resultados → {path}")
