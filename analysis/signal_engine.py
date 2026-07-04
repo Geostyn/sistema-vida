@@ -51,7 +51,11 @@ class SignalEngine:
     def __init__(self, mt5_connector, news_feed, config: dict,
                  correlation_engine=None, macro_feed=None, learning_engine=None,
                  volume_profile=None, delta_engine=None, regime_engine=None,
-                 intermarket_feed=None, neural_engine=None, quant_engine=None):
+                 intermarket_feed=None, neural_engine=None, quant_engine=None,
+                 clock=None):
+        # Reloj inyectable (backtester unificado). Default = expresión idéntica
+        # al código anterior → en vivo el comportamiento es bit a bit igual.
+        self._now         = clock or (lambda: datetime.now(timezone.utc))
         self.mt5          = mt5_connector
         self.news         = news_feed
         self.config       = config
@@ -85,7 +89,7 @@ class SignalEngine:
         """Registra el motivo de descarte (para /estado) y devuelve None."""
         self.last_discard[symbol] = {
             "reason": reason,
-            "time":   datetime.now(timezone.utc).isoformat(),
+            "time":   self._now().isoformat(),
         }
         return None
 
@@ -551,8 +555,8 @@ class SignalEngine:
             "ob_type":        ob_target["type"],
             "news_blackout":  int(news_stat["blackout"]),
             # Features nuevas
-            "hour_utc":       datetime.now(timezone.utc).hour,
-            "day_of_week":    datetime.now(timezone.utc).weekday(),
+            "hour_utc":       self._now().hour,
+            "day_of_week":    self._now().weekday(),
             "vp_score":       float(vp_score),
             "delta_score":    float(delta_score),
             "atr_pct":        round(atr / price * 100, 3) if price > 0 else 0,
@@ -571,7 +575,7 @@ class SignalEngine:
             # Quant (Fase 3): GARCH vol prevista + pendiente Kalman
             "garch_vol":      float(garch_vol),
             "kalman_slope":   float(kalman_slope),
-            "timestamp":      datetime.now(timezone.utc).isoformat(),
+            "timestamp":      self._now().isoformat(),
         }
         # Voto del ML gateado por config (ml.vote_enabled). Autopsia 2026-06-18:
         # ml_proba correlaciona NEGATIVO con ganar (r=-0.267) → el modelo está
@@ -711,7 +715,7 @@ class SignalEngine:
             # Quant (Fase 3): GARCH vol prevista + pendiente Kalman
             "garch_vol":          round(float(garch_vol), 3),
             "kalman_slope":       round(float(kalman_slope), 3),
-            "timestamp":          datetime.now(timezone.utc).isoformat(),
+            "timestamp":          self._now().isoformat(),
             "atr":                round(atr, 5),
         }
 
@@ -1196,8 +1200,8 @@ class SignalEngine:
             "bias_h4":       bias,
             "ob_type":       ob_target["type"],
             "news_blackout": int(news_stat["blackout"]),
-            "hour_utc":      datetime.now(timezone.utc).hour,
-            "day_of_week":   datetime.now(timezone.utc).weekday(),
+            "hour_utc":      self._now().hour,
+            "day_of_week":   self._now().weekday(),
             "vp_score":      float(vp_score),
             "delta_score":   float(delta_score),
             "atr_pct":       round(atr_h4 / price * 100, 3) if price > 0 else 0,
@@ -1208,7 +1212,7 @@ class SignalEngine:
             "fvg_score":     float(fvg_score),
             "m15_aligned":   int(h1_aligned),
             "htf_liq_dist":  float(htf_liq_dist_atr),
-            "timestamp":     datetime.now(timezone.utc).isoformat(),
+            "timestamp":     self._now().isoformat(),
         }
         if self.ml:
             try:
@@ -1295,7 +1299,7 @@ class SignalEngine:
             "atr_pct":            round(atr_h4 / price * 100, 3) if price > 0 else 0,
             "entry_type":         entry_type,
             "reasoning":          reasoning,
-            "timestamp":          datetime.now(timezone.utc).isoformat(),
+            "timestamp":          self._now().isoformat(),
             "atr":                round(atr_h4, 5),
         }
 
@@ -1322,7 +1326,7 @@ class SignalEngine:
         cooldown_h = float(self.config.get("swing", {}).get("cooldown_hours", 24))
         try:
             last_t = datetime.fromisoformat(last["timestamp"])
-            age_h  = (datetime.now(timezone.utc) - last_t).total_seconds() / 3600
+            age_h  = (self._now() - last_t).total_seconds() / 3600
             if age_h >= cooldown_h:
                 return False  # Fuera del cooldown → señal nueva aunque sea similar
         except Exception:
@@ -1374,10 +1378,10 @@ class SignalEngine:
         if cooldown_min > 0:
             try:
                 last_t = datetime.fromisoformat(last["timestamp"])
-                if (datetime.now(timezone.utc) - last_t) < timedelta(minutes=cooldown_min):
+                if (self._now() - last_t) < timedelta(minutes=cooldown_min):
                     logger.info(
                         f"[{symbol}] Señal {direction} duplicada — última hace "
-                        f"{(datetime.now(timezone.utc) - last_t).total_seconds()/60:.0f} min "
+                        f"{(self._now() - last_t).total_seconds()/60:.0f} min "
                         f"(cooldown {cooldown_min} min)"
                     )
                     return True
@@ -1427,7 +1431,7 @@ class SignalEngine:
         # Filtro de sesión propio (ej. "7-11,13-17" = aperturas Londres+NY);
         # sin hours_utc usa la sesión global. El backtest valida ESTA ventana
         # — fuera de ella no se emiten señales daytrade.
-        now_h      = datetime.now(timezone.utc).hour
+        now_h      = self._now().hour
         hours_spec = str(dt_cfg.get("hours_utc", "")).strip()
         if hours_spec:
             try:
@@ -1748,7 +1752,7 @@ class SignalEngine:
             "atr":                round(atr_m15, 5),
             "atr_pct":            round(atr_m15 / price * 100, 3) if price > 0 else 0,
             "entry_type":         entry_type,
-            "timestamp":          datetime.now(timezone.utc).isoformat(),
+            "timestamp":          self._now().isoformat(),
             # Niveles nativos M15 → los bloques 2K y MI CUENTA los usan directo
             "funded_levels":      {"entry": round(entry, 2), "sl": round(sl, 2),
                                    "refined": True},
@@ -1779,7 +1783,7 @@ class SignalEngine:
             return None
 
         # Filtro de sesión propio (ej. "7-11,13-17"); sin hours_utc usa la global.
-        now_h      = datetime.now(timezone.utc).hour
+        now_h      = self._now().hour
         hours_spec = str(sc_cfg.get("hours_utc", "")).strip()
         if hours_spec:
             try:
@@ -2063,7 +2067,7 @@ class SignalEngine:
             "atr":                round(atr_m5, 5),
             "atr_pct":            round(atr_m5 / price * 100, 3) if price > 0 else 0,
             "entry_type":         entry_type,
-            "timestamp":          datetime.now(timezone.utc).isoformat(),
+            "timestamp":          self._now().isoformat(),
             # Niveles nativos M5 → los bloques MI CUENTA / 2K los usan directo
             "funded_levels":      {"entry": round(entry, 5), "sl": round(sl, 5),
                                    "refined": True},

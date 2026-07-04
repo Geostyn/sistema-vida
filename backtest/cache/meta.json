@@ -1,0 +1,145 @@
+{
+  "created_at": "2026-07-04T11:55:22.317467+00:00",
+  "from": "2023-01-01T00:00:00",
+  "symbol_info": {
+    "XAUUSD": {
+      "symbol": "XAUUSD",
+      "digits": 2,
+      "point": 0.01,
+      "trade_contract_size": 100.0,
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01
+    },
+    "EURUSD": {
+      "symbol": "EURUSD",
+      "digits": 5,
+      "point": 1e-05,
+      "trade_contract_size": 100000.0,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01
+    },
+    "USDJPY": {
+      "symbol": "USDJPY",
+      "digits": 3,
+      "point": 0.001,
+      "trade_contract_size": 100000.0,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01
+    },
+    "GBPUSD": {
+      "symbol": "GBPUSD",
+      "digits": 5,
+      "point": 1e-05,
+      "trade_contract_size": 100000.0,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01
+    },
+    "USDCAD": {
+      "symbol": "USDCAD",
+      "digits": 5,
+      "point": 1e-05,
+      "trade_contract_size": 100000.0,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01
+    },
+    "USDSEK": {
+      "symbol": "USDSEK",
+      "digits": 5,
+      "point": 1e-05,
+      "trade_contract_size": 100000.0,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01
+    },
+    "USDCHF": {
+      "symbol": "USDCHF",
+      "digits": 5,
+      "point": 1e-05,
+      "trade_contract_size": 100000.0,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01
+    }
+  },
+  "coverage": {
+    "XAUUSD_M15": {
+      "first": "2023-01-03 01:00:00",
+      "last": "2026-07-03 20:00:00",
+      "bars": 82454
+    },
+    "XAUUSD_H1": {
+      "first": "2023-01-03 01:00:00",
+      "last": "2026-07-03 20:00:00",
+      "bars": 20638
+    },
+    "XAUUSD_H4": {
+      "first": "2023-01-03 00:00:00",
+      "last": "2026-07-03 20:00:00",
+      "bars": 5421
+    },
+    "XAUUSD_D1": {
+      "first": "2023-01-03 00:00:00",
+      "last": "2026-07-03 00:00:00",
+      "bars": 904
+    },
+    "EURUSD_H1": {
+      "first": "2023-01-02 07:00:00",
+      "last": "2026-07-03 23:00:00",
+      "bars": 21766
+    },
+    "EURUSD_H4": {
+      "first": "2023-01-02 04:00:00",
+      "last": "2026-07-03 20:00:00",
+      "bars": 5451
+    },
+    "USDJPY_H1": {
+      "first": "2023-01-02 07:00:00",
+      "last": "2026-07-03 23:00:00",
+      "bars": 21767
+    },
+    "USDJPY_H4": {
+      "first": "2023-01-02 04:00:00",
+      "last": "2026-07-03 20:00:00",
+      "bars": 5452
+    },
+    "GBPUSD_H1": {
+      "first": "2023-01-02 07:00:00",
+      "last": "2026-07-03 23:00:00",
+      "bars": 21765
+    },
+    "GBPUSD_H4": {
+      "first": "2023-01-02 04:00:00",
+      "last": "2026-07-03 20:00:00",
+      "bars": 5451
+    },
+    "USDCAD_H1": {
+      "first": "2023-01-02 07:00:00",
+      "last": "2026-07-03 23:00:00",
+      "bars": 21766
+    },
+    "USDSEK_H1": {
+      "first": "2023-01-02 07:00:00",
+      "last": "2026-07-03 23:00:00",
+      "bars": 21761
+    },
+    "USDCHF_H1": {
+      "first": "2023-01-02 07:00:00",
+      "last": "2026-07-03 23:00:00",
+      "bars": 21766
+    }
+  },
+  "server_utc_offset_hours": 3,
+  "spread_xauusd_observed": 6.4,
+  "account": {
+    "login": 107672623,
+    "balance": 111120.2,
+    "currency": "EUR"
+  },
+  "offset_note": "Medido de los datos (2026-07-04, festivo US sin ticks frescos): apertura semanal Lun 01:00 server = Dom 22:00 UTC (Globex) y pausa diaria ~00:00 server = 21:00 UTC. Servidor = EET: +2 invierno / +3 verano (DST US) — caveat +-1h en transiciones.",
+  "spread_xauusd_observed_note": "spread 6.4 capturado con tick stale de festivo — usar 0.30 configurable"
+}

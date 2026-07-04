@@ -164,8 +164,10 @@ class MarketRegimeEngine:
     Se instancia en TradingSystem y se pasa al SignalEngine.
     """
 
-    def __init__(self, mt5_connector):
+    def __init__(self, mt5_connector, clock=None):
         self.mt5 = mt5_connector
+        # Reloj inyectable (backtester unificado) — default idéntico al vivo
+        self._now = clock or (lambda: datetime.now(timezone.utc))
         self._cache: dict = {}
         self._cache_time: datetime | None = None
         self._cache_ttl_secs = 5 * 60  # 5 minutos
@@ -173,7 +175,7 @@ class MarketRegimeEngine:
     def _cache_valid(self) -> bool:
         if self._cache_time is None:
             return False
-        return (datetime.now(timezone.utc) - self._cache_time).total_seconds() < self._cache_ttl_secs
+        return (self._now() - self._cache_time).total_seconds() < self._cache_ttl_secs
 
     def analyze(self, symbol: str) -> dict:
         """
@@ -197,7 +199,7 @@ class MarketRegimeEngine:
 
         result = self._compute(symbol)
         self._cache[cache_key] = result
-        self._cache_time       = datetime.now(timezone.utc)
+        self._cache_time       = self._now()
         return result
 
     def _compute(self, symbol: str) -> dict:
