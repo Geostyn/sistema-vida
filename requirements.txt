@@ -1,7 +1,30 @@
-﻿streamlit>=1.35.0
-plotly>=5.20.0
+# ── Sistema de Trading XAUUSD + Sistema de Vida ──
+# Versiones = las realmente instaladas en el intérprete del bot
+# (C:\Users\geost\AppData\Local\Python\pythoncore-3.14-64\python.exe).
+
+# Núcleo de datos / cálculo
+numpy>=2.4.6
 pandas>=2.0.0
+PyYAML>=6.0.3
 requests>=2.31.0
+urllib3>=2.0.0
+schedule>=1.2.2
+
+# Conexión al bróker y mercado
+MetaTrader5>=5.0.5735
+yfinance>=1.4.1
+curl_cffi>=0.15.0        # sesión SSL-bypass para yfinance en Windows
+fredapi>=0.5.2           # rendimientos reales 10Y (fallback a ETF TIP si falta clave)
+
+# Machine Learning / IA
+scikit-learn>=1.8.0      # ensemble RF/GBM/ExtraTrees (learning_engine)
+torch>=2.12.0            # LSTM (neural_engine, modo sombra hasta validar)
+groq>=0.9.0              # LLM para el digest diario (alerts/daily_digest)
+
+# Dashboard / reporting
+streamlit>=1.35.0
+plotly>=5.20.0
+
+# Sistema de vida (subsistemas aparte)
 garminconnect>=0.2.0
-groq>=0.9.0
 pdfplumber>=0.11.0

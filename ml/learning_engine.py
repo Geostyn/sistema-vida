@@ -45,6 +45,17 @@ FEATURE_NAMES = [
     "hurst", "adx", "pairs_score",
     "sweep_score", "fvg_score", "m15_aligned",
     "htf_liq_dist",   # distancia (ATR) a liquidez HTF en contra; 99 = ninguna
+    # Features intermarket (Fase 2, 2026-06-17) — NO derivan del precio del oro
+    "inter_score",    # score combinado bias-oro [-1..+1] (reales+COT+riesgo)
+    "real_yield_imp", # impacto reales 10Y (+1 reales bajan=oro alcista)
+    "cot_impact",     # posicionamiento COT (extremos contrarian + momentum)
+    "cot_percentile", # percentil net non-commercial (0..1)
+    # Features quant (Fase 3) — defaults seguros hasta que los motores los pueblen
+    "garch_vol",      # volatilidad prevista GARCH(1,1), 0 = sin dato
+    "kalman_slope",   # pendiente de tendencia filtrada (Kalman), 0 = sin dato
+    # Procedencia de la muestra (1 = vivo, 0 = backtest) — evita confundir
+    # distribuciones cuando se entrena con vivo + backtest mezclados
+    "source",
 ]
 
 
@@ -141,6 +152,18 @@ class LearningEngine:
         # 99 = sin pool HTF en contra (señales antiguas sin la columna → 99)
         htf_liq     = _f(row, "htf_liq_dist", 99)
 
+        # Intermarket (Fase 2) — default neutro si la fila no los tiene
+        inter_score    = _f(row, "inter_score", 0)
+        real_yield_imp = _f(row, "real_yield_imp", 0)
+        cot_impact     = _f(row, "cot_impact", 0)
+        cot_percentile = _f(row, "cot_percentile", 0.5)
+        # Quant (Fase 3) — default 0 hasta que GARCH/Kalman los pueblen
+        garch_vol      = _f(row, "garch_vol", 0)
+        kalman_slope   = _f(row, "kalman_slope", 0)
+        # Procedencia: 1 = vivo (default para predicción en vivo), 0 = backtest
+        src_raw = row.get("source", 1)
+        source  = 0.0 if (str(src_raw).lower().startswith("back") or src_raw in (0, "0", 0.0)) else 1.0
+
         return [
             direction, session, hour, dow,
             confluences, confidence, news_blackout,
@@ -149,30 +172,71 @@ class LearningEngine:
             hurst, adx, pairs_score,
             sweep_score, fvg_score, m15_aligned,
             htf_liq,
+            inter_score, real_yield_imp, cot_impact, cot_percentile,
+            garch_vol, kalman_slope,
+            source,
         ]
 
     # ── Datos de entrenamiento ─────────────────────────────────────
 
-    def _load_training_data(self):
+    # Peso relativo de un trade en vivo vs uno de backtest. El vivo es más
+    # realista (spread/slippage/fills reales) → pesa más. El backtest aporta
+    # VOLUMEN (miles de muestras) para que el modelo aprenda rápido.
+    LIVE_WEIGHT     = 3.0
+    BACKTEST_WEIGHT = 1.0
+
+    def _load_training_data(self, with_weights: bool = False):
+        """
+        Carga datos de entrenamiento: trades en vivo (tabla signals) + muestras
+        de backtest (tabla training_samples). Devuelve (X, y) o (X, y, w).
+        """
+        rows = []          # cada item: (feature_dict, outcome, weight)
+
+        # ── 1. Trades en vivo (tabla signals) ──────────────────────
         try:
             conn = sqlite3.connect(self.db_path)
-            df   = pd.read_sql_query("""
-                SELECT *
-                FROM signals
+            df = pd.read_sql_query("""
+                SELECT * FROM signals
                 WHERE outcome IN ('WIN', 'LOSS')
                 ORDER BY timestamp ASC
             """, conn)
             conn.close()
+            # Dedup de entrenamiento (fix spam 2026-07): antes ~24% de las filas
+            # eran señales DUPLICADAS (mismo setup emitido 10× en una vela) → el
+            # modelo aprendía ese resultado 10 veces. Se colapsan por
+            # vela-H1 | modelo | dirección | entry~0.1, quedándose la primera.
+            if not df.empty and "timestamp" in df.columns:
+                _bar   = pd.to_datetime(df["timestamp"], errors="coerce", utc=True).dt.strftime("%Y-%m-%dT%H")
+                _model = (df["model"] if "model" in df.columns else "OB")
+                _key   = (_bar.astype(str) + "|" + pd.Series(_model, index=df.index).fillna("OB").astype(str)
+                          + "|" + df["direction"].astype(str)
+                          + "|" + df["entry"].round(1).astype(str))
+                n0 = len(df)
+                df = df.loc[~_key.duplicated(keep="first")].copy()
+                if len(df) < n0:
+                    logger.info(f"ML training: {n0-len(df)} señales duplicadas descartadas ({len(df)} limpias)")
+            for _, r in df.iterrows():
+                d = r.to_dict()
+                d["source"] = 1  # vivo
+                rows.append((d, d["outcome"], self.LIVE_WEIGHT))
         except Exception as e:
-            logger.warning(f"Error leyendo datos de entrenamiento: {e}")
-            return None, None
+            logger.warning(f"Error leyendo signals (vivo): {e}")
 
-        if len(df) < MIN_TRADES_TO_TRAIN:
-            return None, None
+        # ── 2. Muestras de backtest (tabla training_samples) ───────
+        try:
+            from ml.training_store import load_samples
+            for s in load_samples(self.db_path, source="backtest"):
+                rows.append((s, s.get("outcome"), self.BACKTEST_WEIGHT))
+        except Exception as e:
+            logger.debug(f"training_samples no disponible: {e}")
 
-        X = np.array([self._extract_features(row) for _, row in df.iterrows()], dtype=float)
-        y = np.array([1 if r == "WIN" else 0 for r in df["outcome"]])
-        return X, y
+        if len(rows) < MIN_TRADES_TO_TRAIN:
+            return (None, None, None) if with_weights else (None, None)
+
+        X = np.array([self._extract_features(d) for d, _, _ in rows], dtype=float)
+        y = np.array([1 if o == "WIN" else 0 for _, o, _ in rows])
+        w = np.array([wt for _, _, wt in rows], dtype=float)
+        return (X, y, w) if with_weights else (X, y)
 
     # ── Entrenamiento Ensemble ─────────────────────────────────────
 
@@ -182,9 +246,12 @@ class LearningEngine:
             GradientBoostingClassifier,
             ExtraTreesClassifier,
         )
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
         from sklearn.model_selection import cross_val_score
 
-        X, y = self._load_training_data()
+        X, y, w = self._load_training_data(with_weights=True)
         if X is None:
             return {"trained": False, "reason": f"Menos de {MIN_TRADES_TO_TRAIN} trades cerrados"}
 
@@ -205,6 +272,15 @@ class LearningEngine:
                 n_estimators=150, max_depth=5, min_samples_leaf=3,
                 class_weight="balanced", random_state=42, n_jobs=-1,
             ),
+            # Red neuronal tabular (MLP) — escalada; ahora viable con los datos
+            # de backtest. early_stopping + L2 (alpha) contra sobreajuste.
+            "mlp": make_pipeline(
+                StandardScaler(),
+                MLPClassifier(
+                    hidden_layer_sizes=(32, 16), alpha=1e-3, max_iter=600,
+                    early_stopping=True, n_iter_no_change=15, random_state=42,
+                ),
+            ),
         }
 
         cv_folds   = min(5, n_trades // 6) if n_trades >= 30 else 2
@@ -214,7 +290,12 @@ class LearningEngine:
 
         for name, clf in candidates.items():
             try:
-                clf.fit(X, y)
+                # sample_weight solo lo soportan los modelos de árbol; el MLP
+                # (Pipeline) no → reintento sin pesos ante cualquier fallo
+                try:
+                    clf.fit(X, y, sample_weight=w)
+                except Exception:
+                    clf.fit(X, y)
                 if n_trades >= cv_folds * 3:
                     scores = cross_val_score(clf, X, y, cv=cv_folds, scoring="accuracy")
                     acc    = float(scores.mean())

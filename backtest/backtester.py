@@ -33,6 +33,8 @@ LOGS_DIR = os.path.join(_PROJECT_ROOT, "logs")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analysis.indicators import add_indicators, get_ema_bias
+from analysis.trend_filter import counter_trend_veto, compute_directional_bias
+from analysis.market_regime import calculate_adx
 from analysis.market_structure import (
     find_order_blocks,
     find_swing_points,
@@ -53,7 +55,8 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
                  date_from: datetime, date_to: datetime,
                  config: dict,
                  use_filters: bool | None = None,
-                 use_reversal: bool | None = None) -> dict:
+                 use_reversal: bool | None = None,
+                 record_training: bool = False) -> dict:
     """
     Simula la estrategia sobre datos históricos.
 
@@ -78,9 +81,22 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
     capital0    = float(risk_cfg.get("capital", 10000))
     sess_start  = int(sess_cfg.get("start", 0))
     sess_end    = int(sess_cfg.get("end", 23))
+    # Horas bloqueadas puntuales (default vacío = sin efecto). Misma fuente que el
+    # vivo (risk_manager.is_session_allowed). Valida exclusiones tipo "hora 16 UTC".
+    blocked_hours = config.get("sessions", {}).get("blocked_hours_utc", []) or []
+    # Puerta de régimen (experimento 2026-06-19): bloquear TODA dirección si la
+    # tendencia es FUERTE (ADX H4 >= umbral), porque la reversión a OB también
+    # falla a favor de tendencia fuerte (el precio no retrocede al OB, sigue).
+    # Default None = sin efecto. Lo honran el vivo (signal_engine) y el backtester.
+    regime_block_adx = (config.get("regime", {}) or {}).get("block_strong_trend_adx", None)
     # Comisión round-trip por lote (configurable, default XAUUSD ~$7)
     comm_cfg    = config.get("backtest", {})
     comm_per_lot = float(comm_cfg.get("commission_per_lot", 7.0))
+    # Slippage round-trip simulado en unidades de ATR (default 0 = sin slippage).
+    # El SL del backtester ≈ atr_sl_multiplier×ATR, así que en R: slip_r = slippage_atr/atr_mult.
+    # Se descuenta a CADA trade (entrada+salida pagan deslizamiento). Realismo de costes.
+    slippage_atr = float(comm_cfg.get("slippage_atr", 0.0))
+    slip_r       = (slippage_atr / atr_mult) if atr_mult > 0 else 0.0
 
     # Gestión activa (igual que el sistema en vivo)
     mgmt_cfg     = config.get("trading", {}).get("management", {}) or {}
@@ -106,16 +122,34 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
     disp_candles  = int(liq_cfg.get("displacement_candles", 3))
     disp_body     = float(liq_cfg.get("displacement_body_atr", 0.8))
     disp_net      = float(liq_cfg.get("displacement_net_atr", 1.5))
+
+    # Puerta direccional HTF (fix sesgo 2026-06-17) — mismo criterio que el vivo.
+    # Independiente de use_filters para poder medir su impacto aislado.
+    tf_cfg        = config.get("trend_filter", {}) or {}
+    trend_veto_on = bool(tf_cfg.get("counter_trend_veto", True))
+
+    # Filtro de volatilidad por PERCENTIL de ATR (research + autopsia atr_pct r=-0.37).
+    # La reversión a OB falla cuando la vol cambia a régimen de tendencia. Se mide
+    # el percentil del ATR actual vs su ventana reciente y se salta la barra si está
+    # en el extremo alto.
+    vol_cfg       = config.get("volatility", {}) or {}
+    vol_filter_on = bool(vol_cfg.get("vol_filter", False))
+    vol_pct_max   = float(vol_cfg.get("vol_pct_max", 0.90))
+    vol_window    = int(vol_cfg.get("vol_window", 150))
     rev_lookback  = int(rev_cfg.get("lookback_bars", 8))
     rev_sl_buffer = float(rev_cfg.get("sl_buffer_atr_m15", 0.5))
 
     vetoed_by_sweep        = 0
     vetoed_by_displacement = 0
     vetoed_by_htf          = 0
+    vetoed_by_trend        = 0
+    vetoed_by_regime       = 0
 
     _print_header(symbol, timeframe, date_from, date_to)
     print(f"  Sesión permitida: {sess_start:02d}:00 – {sess_end:02d}:59 UTC")
     print(f"  Comisión simulada: ${comm_per_lot:.1f}/lote round-trip")
+    if slippage_atr > 0:
+        print(f"  Slippage simulado: {slippage_atr:.2f}×ATR round-trip ({slip_r:.3f}R/trade)")
     print(f"  Entrada: LIMIT en retroceso al OB (fill window {fill_window}h)")
     print(f"  Filtros liquidez: {'ON (sweep-contra + displacement)' if use_filters else 'OFF (baseline)'}")
     print(f"  Modelo reversal:  {'ON' if use_reversal else 'OFF'}")
@@ -166,7 +200,7 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
         # Filtro de sesión: solo operar en horas configuradas
         current_time = df_h1["time"].iloc[i]
         bar_hour = current_time.hour if hasattr(current_time, "hour") else pd.Timestamp(current_time).hour
-        if not (sess_start <= bar_hour < sess_end):
+        if not (sess_start <= bar_hour < sess_end) or bar_hour in blocked_hours:
             continue
 
         # Filtro RSI: no comprar sobrecompra, no vender sobreventa
@@ -181,6 +215,13 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
             continue
         atr = float(atr)
 
+        # Filtro de volatilidad por percentil: en vol extrema (regime change a
+        # tendencia) la reversión a OB pierde → no operar esa barra.
+        if vol_filter_on:
+            atr_hist = window_h1["atr"].tail(vol_window)
+            if len(atr_hist) >= 30 and float((atr_hist <= atr).mean()) >= vol_pct_max:
+                continue
+
         # Swings recientes (sweep-contra y reversal) — tail por rendimiento
         if use_filters or use_reversal:
             tail_sw = window_h1.tail(120).reset_index(drop=True)
@@ -193,19 +234,39 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
         if len(h4_window) < 30:
             continue
         h4_ind = add_indicators(h4_window)
-        bias   = get_ema_bias(h4_ind)
+        # Bias unificado con el vivo (EMA + estructura, mismo criterio)
+        bias, bt_direction = compute_directional_bias(h4_ind, lookback=5)
 
         # ── Modelo 1: OB retroceso (estrategia base validada) ─────
         setup = None
         if bias != "NEUTRAL":
-            direction = "BUY" if bias == "BULLISH" else "SELL"
+            direction = bt_direction
 
             # RSI: rechazar setups contra momentum extremo
             rsi_extreme = (direction == "BUY" and float(rsi_val) > 65) or \
                           (direction == "SELL" and float(rsi_val) < 35)
 
+            # Puerta direccional HTF: no operar contra tendencia fuerte (fix sesgo)
             vetoed = False
-            if not rsi_extreme:
+            _adx_h4 = None
+            if trend_veto_on:
+                _adx_h4 = calculate_adx(h4_ind) if tf_cfg.get("adx_veto", False) else None
+                ct_blocked, _ = counter_trend_veto(direction, h4_ind, None, tf_cfg,
+                                                   adx=_adx_h4)
+                if ct_blocked:
+                    vetoed_by_trend += 1
+                    vetoed = True
+
+            # Puerta de régimen: si la tendencia es fuerte (ADX H4 >= umbral),
+            # saltar en CUALQUIER dirección (la reversión a OB falla en tendencia).
+            if not vetoed and regime_block_adx is not None:
+                if _adx_h4 is None:
+                    _adx_h4 = calculate_adx(h4_ind)
+                if _adx_h4 is not None and _adx_h4 >= float(regime_block_adx):
+                    vetoed_by_regime += 1
+                    vetoed = True
+
+            if not rsi_extreme and not vetoed:
                 # Filtros de liquidez (mismos parámetros que signal_engine).
                 # El veto sweep-contra SOLO actúa sobre niveles significativos
                 # (equal highs/lows, PDH/PDL, sesión) — barrer un swing menor
@@ -312,8 +373,8 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
         comm_total    = lot_size_est * comm_per_lot
         comm_pct      = comm_total / equity[-1]  # comisión como % del capital actual
 
-        pnl_rr  = outcome["pnl_r"]
-        pnl_pct = pnl_rr * risk_pct - comm_pct  # descontar comisión siempre
+        pnl_rr  = outcome["pnl_r"] - slip_r       # descontar slippage round-trip (en R)
+        pnl_pct = pnl_rr * risk_pct - comm_pct    # descontar comisión siempre
         new_eq  = equity[-1] * (1 + pnl_pct)
         equity.append(new_eq)
         last_signal_bar = i
@@ -340,11 +401,45 @@ def run_backtest(mt5_connector, symbol: str, timeframe: str,
             "model":          setup["model"],
         })
 
+    # ── Muestras de entrenamiento (pipeline backtest → ML/NN) ──
+    # Cada trade WIN/LOSS se guarda como features+outcome (source=backtest) para
+    # que LearningEngine/NeuralEngine aprendan de miles de trades, no solo de los
+    # ~245 en vivo. El backtester es crudo → features limitadas (las que tiene);
+    # el resto va a default neutro en _extract_features.
+    if record_training:
+        try:
+            from ml.training_store import record_samples, clear_source
+            samples = []
+            for t in trades:
+                if t["result"] not in ("WIN", "LOSS"):
+                    continue
+                rsi = t.get("rsi", 50)
+                rsi_state = "OVERSOLD" if rsi < 35 else ("OVERBOUGHT" if rsi > 65 else "NEUTRAL")
+                samples.append({
+                    "timestamp":  t["entry_time"],
+                    "direction":  t["direction"],
+                    "bias_h4":    t.get("bias", "NEUTRAL"),
+                    "ob_type":    "BULLISH" if t["direction"] == "BUY" else "BEARISH",
+                    "rsi_state":  rsi_state,
+                    "rr":         t.get("rr", 2.0),
+                    "entry_type": t.get("entry_type", ""),
+                    "outcome":    t["result"],
+                })
+            db_path = config.get("logging", {}).get("db_path", "logs/trades.db")
+            if not os.path.isabs(db_path):
+                db_path = os.path.join(_PROJECT_ROOT, db_path)
+            clear_source(db_path, "backtest")
+            record_samples(db_path, samples, source="backtest")
+        except Exception as e:
+            logger.warning(f"No se pudieron guardar muestras de entrenamiento: {e}")
+
     # ── Métricas ──────────────────────────────────────────────
     metrics = _calculate_metrics(trades, equity)
     metrics["vetoed_by_sweep"]        = vetoed_by_sweep
     metrics["vetoed_by_displacement"] = vetoed_by_displacement
     metrics["vetoed_by_htf"]          = vetoed_by_htf
+    metrics["vetoed_by_trend"]        = vetoed_by_trend
+    metrics["vetoed_by_regime"]       = vetoed_by_regime
     metrics["filters_on"]             = bool(use_filters)
     metrics["reversal_on"]            = bool(use_reversal)
 
@@ -664,6 +759,7 @@ def _print_results(m: dict):
     print(f"  Capital final:     ${m['final_equity']:,.2f}  (inicio: ${m['initial_equity']:,.2f})")
     if m.get("filters_on"):
         print(f"{'─'*55}")
+        print(f"  Vetos tendencia HTF:  {m.get('vetoed_by_trend', 0)}")
         print(f"  Vetos sweep-contra:   {m.get('vetoed_by_sweep', 0)}")
         print(f"  Vetos displacement:   {m.get('vetoed_by_displacement', 0)}")
         print(f"  Vetos liquidez HTF:   {m.get('vetoed_by_htf', 0)}")

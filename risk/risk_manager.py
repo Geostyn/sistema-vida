@@ -99,9 +99,18 @@ class RiskManager:
             logger.warning("SL distance = 0, usando lote mínimo 0.01")
             return 0.01
 
-        if any(x in symbol.upper() for x in ("XAU", "GOLD")):
+        sym_u     = symbol.upper()
+        contracts = self.config.get("symbols", {}).get("contracts", {}) or {}
+        if any(x in sym_u for x in ("XAU", "GOLD")):
             risk_per_lot = sl_distance * 100.0
-        elif "JPY" in symbol.upper():
+        elif sym_u in contracts:
+            # Indices u otros no-forex: el valor de punto varia por broker, asi que
+            # se define por simbolo en config (symbols.contracts). risk_per_lot =
+            # (distancia_SL / pip) * USD que mueve 1 lote por pip.
+            c   = contracts[sym_u]
+            pip = float(c.get("pip", 1.0)) or 1.0
+            risk_per_lot = (sl_distance / pip) * float(c.get("value_per_lot", 1.0))
+        elif "JPY" in sym_u:
             pip_size     = 0.01
             sl_pips      = sl_distance / pip_size
             risk_per_lot = sl_pips * 9.0
@@ -203,10 +212,21 @@ class RiskManager:
         return {"ok": True, "reason": ""}
 
     def is_session_allowed(self) -> dict:
-        hours = self.config.get("sessions", {}).get("allowed_hours_utc", {})
+        sess  = self.config.get("sessions", {})
+        hours = sess.get("allowed_hours_utc", {})
         start = int(hours.get("start", 7))
         end   = int(hours.get("end", 20))
         now   = datetime.now(timezone.utc).hour
+
+        # Horas bloqueadas puntuales (validado en backtest 2 años: la hora 16 UTC
+        # es net-negativa en AMBOS años; una ventana contigua no puede excluirla).
+        # Default vacío = sin efecto. Lo honran live (aquí) y backtester.
+        blocked = sess.get("blocked_hours_utc", []) or []
+        if now in blocked:
+            return {
+                "ok":     False,
+                "reason": f"Hora {now}:00 UTC bloqueada (net-negativa en backtest)",
+            }
 
         if start <= now < end:
             return {"ok": True, "reason": ""}

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import logging
 import os
+import json
 import urllib3
 from datetime import datetime, timezone
 
@@ -55,6 +56,11 @@ class VolumeProfileEngine:
         self.va_pct      = float(self.config.get("value_area_pct", 0.70))
         self._cache      = None
         self._cache_time = None
+        # Caché en disco: sobrevive reinicios y evita depender de yfinance al
+        # arrancar (mismo patrón que intermarket_feed).
+        self._cache_file = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "logs", "vp_comex_cache.json")
+        self._load_disk_cache()
 
     def _cache_valid(self) -> bool:
         if self._cache_time is None:
@@ -62,13 +68,38 @@ class VolumeProfileEngine:
         age = (datetime.now(timezone.utc) - self._cache_time).total_seconds()
         return age < self.cache_min * 60
 
+    def _load_disk_cache(self):
+        """Carga el último perfil guardado en disco (si existe y es legible)."""
+        try:
+            if not os.path.exists(self._cache_file):
+                return
+            with open(self._cache_file, "r", encoding="utf-8") as f:
+                blob = json.load(f)
+            prof = blob.get("profile")
+            ts   = blob.get("cache_time")
+            if prof and ts:
+                self._cache      = prof
+                self._cache_time = datetime.fromisoformat(ts)
+                logger.info("VP COMEX: caché cargada de disco (arranque sin yfinance)")
+        except Exception as e:
+            logger.debug(f"VP COMEX: no se pudo cargar caché de disco: {e}")
+
+    def _save_disk_cache(self, profile: dict):
+        try:
+            os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
+            with open(self._cache_file, "w", encoding="utf-8") as f:
+                json.dump({"profile": profile,
+                           "cache_time": datetime.now(timezone.utc).isoformat()},
+                          f, default=str)
+        except Exception as e:
+            logger.debug(f"VP COMEX: no se pudo guardar caché en disco: {e}")
+
     def _fetch_comex_data(self) -> pd.DataFrame:
         """Descarga 30 días de datos H1 de GC=F (Gold Futures CME)."""
         try:
-            import yfinance as yf
-            df = yf.Ticker(self.ticker, session=_YF_SESSION).history(
-                period="30d", interval="1h", auto_adjust=True
-            )
+            from data.yf_safe import safe_history
+            df = safe_history(self.ticker, session=_YF_SESSION,
+                              period="30d", interval="1h", auto_adjust=True)
             if df.empty:
                 return pd.DataFrame()
             df.index = pd.to_datetime(df.index, utc=True)
@@ -163,6 +194,7 @@ class VolumeProfileEngine:
 
         self._cache      = profile
         self._cache_time = datetime.now(timezone.utc)
+        self._save_disk_cache(profile)
 
         logger.info(
             f"VP COMEX actualizado | POC:{profile['poc']} "

@@ -30,6 +30,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from analysis.indicators import add_indicators, get_ema_bias, get_rsi_state
+from analysis.trend_filter import counter_trend_veto
 from analysis.market_structure import (
     detect_market_structure,
     find_order_blocks,
@@ -49,7 +50,8 @@ MAX_CONFLUENCES = 16.5
 class SignalEngine:
     def __init__(self, mt5_connector, news_feed, config: dict,
                  correlation_engine=None, macro_feed=None, learning_engine=None,
-                 volume_profile=None, delta_engine=None, regime_engine=None):
+                 volume_profile=None, delta_engine=None, regime_engine=None,
+                 intermarket_feed=None, neural_engine=None, quant_engine=None):
         self.mt5          = mt5_connector
         self.news         = news_feed
         self.config       = config
@@ -59,13 +61,25 @@ class SignalEngine:
         self.vp           = volume_profile
         self.delta        = delta_engine
         self.regime       = regime_engine      # MarketRegimeEngine (nuevo)
+        self.intermarket  = intermarket_feed   # IntermarketFeed (reales/COT/oro-plata)
+        self.neural       = neural_engine      # NeuralEngine LSTM (MODO SOMBRA)
+        self.quant        = quant_engine       # QuantEngine (GARCH vol + Kalman trend)
         self._last_signals: dict = {}
         self._last_swing_signals: dict = {}
         self._last_dt_signals: dict = {}   # anti-duplicado daytrade M15
         self._last_dt_bar: dict = {}       # última vela M15 analizada por símbolo
+        self._last_scalp_signals: dict = {}  # anti-duplicado scalp M5
+        self._last_scalp_bar: dict = {}      # última vela M5 analizada por símbolo
         # Diagnóstico: último motivo de descarte por símbolo — lo lee
         # main.py para responder /estado ("por qué no hay señal ahora")
         self.last_discard: dict = {}
+
+    @staticmethod
+    def _is_gold(symbol: str) -> bool:
+        """True si el símbolo es oro. Los módulos gold-only (Volume Profile COMEX
+        GC=F, DXY, intermarket/COT, sentimiento de noticias del oro) solo deben
+        aportar confluencia cuando se opera oro; en forex/índices meten ruido."""
+        return any(x in str(symbol).upper() for x in ("XAU", "GOLD"))
 
     def _discard(self, symbol: str, reason: str):
         """Registra el motivo de descarte (para /estado) y devuelve None."""
@@ -77,7 +91,7 @@ class SignalEngine:
 
     def analyze(self, symbol: str) -> dict | None:
         """
-        Análisis completo con hasta 14.5 confluencias.
+        Análisis completo con hasta 16.5 confluencias.
         Returns señal dict si hay setup válido, None en caso contrario.
         """
         risk_cfg        = self.config.get("risk", {})
@@ -115,21 +129,30 @@ class SignalEngine:
         if df_h4.empty or df_h1.empty:
             return self._discard(symbol, "Sin datos H4/H1 de MT5")
 
-        # ── 2. Bias macro H4 ──────────────────────────────────────
-        ema_bias  = get_ema_bias(df_h4)
-        struct_h4 = detect_market_structure(df_h4, lookback=5)
-        trend_h4  = struct_h4["trend"]
-
-        if ema_bias == trend_h4 and ema_bias != "NEUTRAL":
-            bias = ema_bias
-        elif ema_bias != "NEUTRAL":
-            bias = ema_bias
-        elif trend_h4 != "NEUTRAL":
-            bias = trend_h4
-        else:
+        # ── 2. Bias macro H4 (función compartida con el backtester) ──
+        from analysis.trend_filter import compute_directional_bias
+        bias, direction = compute_directional_bias(df_h4, lookback=5)
+        if bias == "NEUTRAL" or direction is None:
             return self._discard(symbol, "Bias H4 NEUTRAL — sin dirección clara")
 
-        direction = "BUY" if bias == "BULLISH" else "SELL"
+        # ── 2b. Puerta direccional HTF (fix sesgo 2026-06-17) ─────
+        # No operar CONTRA una tendencia HTF fuerte: el diagnóstico mostró
+        # 214 SELL vs 29 BUY y regime TRENDING_UP → 0W/7L (vender dentro de
+        # tendencias alcistas). La estrategia de retroceso a OB solo funciona
+        # en rango o A FAVOR de la tendencia, no en contra de una fuerte.
+        tf_cfg = self.config.get("trend_filter", {})
+        dxy_score_veto = None
+        if self.corr and tf_cfg.get("use_dxy", True):
+            try:
+                dxy_score_veto = self.corr.get_dxy_trend().get("score")
+            except Exception:
+                dxy_score_veto = None
+        ct_blocked, ct_reason = counter_trend_veto(
+            direction, df_h4, dxy_score_veto, tf_cfg,
+            adx=regime_data.get("adx"))
+        if ct_blocked:
+            logger.info(f"[{symbol}] [TREND-VETO] {ct_reason} — señal descartada")
+            return self._discard(symbol, f"Veto tendencia HTF: {ct_reason}")
 
         # ── 3. Estructura y OBs en H1 ────────────────────────────
         struct_h1 = detect_market_structure(df_h1, lookback=5)
@@ -146,8 +169,43 @@ class SignalEngine:
         if atr is None or pd.isna(atr) or float(atr) == 0:
             return self._discard(symbol, "ATR no disponible")
         atr       = float(atr)
+
+        # Filtro de volatilidad por PERCENTIL de ATR (validado backtest in-sample
+        # + OOS: PF 1.45→1.67, Sharpe 2.3→3.2, DD igual; research mean-reversion +
+        # autopsia atr_pct r=-0.37). En vol extrema la reversión a OB falla.
+        vol_cfg = self.config.get("volatility", {})
+        if vol_cfg.get("vol_filter", False):
+            vw = int(vol_cfg.get("vol_window", 150))
+            atr_hist = df_h1["atr"].tail(vw)
+            vmax = float(vol_cfg.get("vol_pct_max", 0.90))
+            if len(atr_hist) >= 30 and float((atr_hist <= atr).mean()) >= vmax:
+                return self._discard(
+                    symbol, f"Volatilidad extrema (ATR ≥ P{vmax*100:.0f}) — "
+                            f"la reversión a OB falla en alta vol")
+
         rsi_state = get_rsi_state(df_h1)
         rsi_val   = float(df_h1["rsi"].iloc[-1]) if "rsi" in df_h1.columns else None
+
+        # ── 4a. Quant: GARCH (vol prevista) + Kalman (tendencia) ──
+        garch_vol    = 1.0
+        kalman_slope = 0.0
+        if self.quant:
+            try:
+                q = self.quant.analyze(symbol, df_h1, atr=atr)
+                garch_vol    = float(q.get("garch_vol", 1.0))
+                kalman_slope = float(q.get("kalman_slope", 0.0))
+                # Guard de volatilidad: si se prevé vol alta, exigir más calidad
+                q_cfg = self.config.get("quant", {})
+                if q_cfg.get("garch_vol_guard", True) and \
+                   garch_vol >= float(q_cfg.get("garch_high_ratio", 1.6)):
+                    bump = float(q_cfg.get("garch_conf_bump", 1.0))
+                    min_confluences += bump
+                    logger.debug(
+                        f"[{symbol}] GARCH vol alta ({garch_vol:.2f}) — "
+                        f"min_confluences +{bump} → {min_confluences}"
+                    )
+            except Exception as e:
+                logger.debug(f"Quant engine no disponible: {e}")
 
         # ── 4b. Filtro de spread (coste de entrada) ───────────────
         spread         = float(tick.get("spread", 0) or 0)
@@ -366,6 +424,24 @@ class SignalEngine:
         elif macro_bias == "NEUTRAL":
             confluences += 0.3
 
+        # ── 9b. INTERMARKET (reales 10Y + COT + oro/plata + riesgo) ──
+        # Datos que NO derivan del precio del oro → rompen la circularidad de
+        # las confluencias técnicas (driver #1: rendimientos reales).
+        inter_ctx   = None
+        inter_conf  = 0.0
+        inter_score = 0.0
+        if self.intermarket:
+            try:
+                inter_ctx   = self.intermarket.get_intermarket_score(direction)
+                inter_conf  = float(inter_ctx.get("confluence", 0.0))
+                inter_score = float(inter_ctx.get("gold_bias_score", 0.0))
+                if inter_conf > 0:
+                    confluences += inter_conf
+                    for d in inter_ctx.get("details", []):
+                        cf_details.append(d)
+            except Exception as e:
+                logger.debug(f"Intermarket no disponible: {e}")
+
         # ── 11. Volume Profile COMEX ──────────────────────────────
         vp_score, vp_desc = 0.0, ""
         if self.vp:
@@ -487,28 +563,71 @@ class SignalEngine:
             "fvg_score":      float(fvg_score),
             "m15_aligned":    int(m15_aligned),
             "htf_liq_dist":   float(htf_liq_dist_atr),
+            # Features intermarket (Fase 2): datos macro que no derivan del precio
+            "inter_score":    float(inter_score),
+            "real_yield_imp": float(inter_ctx["real_yields"].get("gold_impact", 0.0)) if inter_ctx else 0.0,
+            "cot_impact":     float(inter_ctx["cot"].get("gold_impact", 0.0)) if inter_ctx else 0.0,
+            "cot_percentile": float(inter_ctx["cot"].get("percentile", 0.5)) if inter_ctx else 0.5,
+            # Quant (Fase 3): GARCH vol prevista + pendiente Kalman
+            "garch_vol":      float(garch_vol),
+            "kalman_slope":   float(kalman_slope),
             "timestamp":      datetime.now(timezone.utc).isoformat(),
         }
+        # Voto del ML gateado por config (ml.vote_enabled). Autopsia 2026-06-18:
+        # ml_proba correlaciona NEGATIVO con ganar (r=-0.267) → el modelo está
+        # invertido (entrenado sobre datos sesgados SELL-en-subida). Mientras esté
+        # mal calibrado NO debe votar: se calcula y registra, pero no suma ni veta.
+        ml_vote = self.config.get("ml", {}).get("vote_enabled", True)
         if self.ml:
             try:
                 ml_proba = self.ml.predict_win_probability(signal_preview)
-                # Threshold bajado a 0.60 (ensemble es más robusto que RF solo)
-                if ml_proba >= 0.60:
-                    confluences += 1; cf_details.append(f"ML ensemble confirma ({ml_proba:.0%})")
-                confidence = min(confluences / MAX_CONFLUENCES, 1.0)
+                if ml_vote:
+                    # Threshold bajado a 0.60 (ensemble es más robusto que RF solo)
+                    if ml_proba >= 0.60:
+                        confluences += 1; cf_details.append(f"ML ensemble confirma ({ml_proba:.0%})")
+                    confidence = min(confluences / MAX_CONFLUENCES, 1.0)
 
-                # ML VETO: con modelo entrenado en 40+ trades, descartar
-                # señales que el ensemble considera claramente perdedoras
-                veto_thr = float(risk_cfg.get("ml_veto_threshold", 0.40))
-                if getattr(self.ml, "last_count", 0) >= 40 and ml_proba < veto_thr:
-                    logger.info(
-                        f"[{symbol}] ML VETO — proba {ml_proba:.0%} < {veto_thr:.0%} "
-                        f"({self.ml.last_count} trades de historial)"
-                    )
-                    return self._discard(
-                        symbol, f"ML veto: probabilidad {ml_proba:.0%} < {veto_thr:.0%}")
+                    # ML VETO: con modelo entrenado en 40+ trades, descartar
+                    # señales que el ensemble considera claramente perdedoras
+                    veto_thr = float(risk_cfg.get("ml_veto_threshold", 0.40))
+                    if getattr(self.ml, "last_count", 0) >= 40 and ml_proba < veto_thr:
+                        logger.info(
+                            f"[{symbol}] ML VETO — proba {ml_proba:.0%} < {veto_thr:.0%} "
+                            f"({self.ml.last_count} trades de historial)"
+                        )
+                        return self._discard(
+                            symbol, f"ML veto: probabilidad {ml_proba:.0%} < {veto_thr:.0%}")
             except Exception as e:
                 logger.debug(f"ML no disponible: {e}")
+
+        # ── Red neuronal LSTM ─────────────────────────────────────
+        # Por defecto MODO SOMBRA: predice y se REGISTRA, pero NO influye.
+        # Si neural.influence=true en config (tras validar con
+        # backtest/neural_eval.py), la red SÍ modifica la señal:
+        #   · +neural.conf_bonus confluencias si proba >= neural.conf_threshold
+        #   · veto si neural.veto_enabled y proba < neural.veto_threshold
+        neural_proba = 0.5
+        if self.neural is not None and getattr(self.neural, "available", lambda: False)():
+            try:
+                neural_proba = self.neural.predict_proba(df_h1, direction)
+            except Exception as e:
+                logger.debug(f"Neural no disponible: {e}")
+
+        n_cfg = self.config.get("neural", {})
+        if n_cfg.get("influence", False) and self.neural and self.neural.available():
+            if neural_proba >= float(n_cfg.get("conf_threshold", 0.58)):
+                bonus = float(n_cfg.get("conf_bonus", 0.5))
+                confluences += bonus
+                cf_details.append(f"Red neuronal confirma ({neural_proba:.0%})")
+            if n_cfg.get("veto_enabled", False):
+                veto_thr = float(n_cfg.get("veto_threshold", 0.40))
+                if neural_proba < veto_thr:
+                    logger.info(
+                        f"[{symbol}] NEURAL VETO — proba {neural_proba:.0%} "
+                        f"< {veto_thr:.0%}"
+                    )
+                    return self._discard(
+                        symbol, f"Veto red neuronal: {neural_proba:.0%} < {veto_thr:.0%}")
 
         # Confidence final
         confidence = min(confluences / MAX_CONFLUENCES, 1.0)
@@ -584,6 +703,14 @@ class SignalEngine:
             "atr_pct":            round(atr / price * 100, 3) if price > 0 else 0,
             "entry_type":         entry_type,
             "reasoning":          reasoning,
+            # Contexto intermarket para Telegram (reales/COT/oro-plata) y features
+            "intermarket":        inter_ctx,
+            "inter_score":        float(inter_score),
+            # Red neuronal LSTM (modo sombra) — solo informativo/registro
+            "neural_proba":       round(float(neural_proba), 3),
+            # Quant (Fase 3): GARCH vol prevista + pendiente Kalman
+            "garch_vol":          round(float(garch_vol), 3),
+            "kalman_slope":       round(float(kalman_slope), 3),
             "timestamp":          datetime.now(timezone.utc).isoformat(),
             "atr":                round(atr, 5),
         }
@@ -1507,9 +1634,10 @@ class SignalEngine:
         if not news_stat["blackout"]:
             confluences += 0.5; cf_details.append("Sin noticias")
 
-        # Volume Profile COMEX (mismo motor que H1)
+        # Volume Profile COMEX (mismo motor que H1) — SOLO oro: el perfil es de
+        # los futuros de oro COMEX (GC=F); no aporta nada a forex/índices.
         vp_score = 0.0
-        if self.vp:
+        if self.vp and self._is_gold(symbol):
             try:
                 vp_score, vp_desc = self.vp.get_confluence(
                     price=price, direction=direction, atr=atr_m15, spot_price=price
@@ -1521,7 +1649,7 @@ class SignalEngine:
             except Exception as e:
                 logger.debug(f"[DT] VP: {e}")
 
-        # Delta ticks
+        # Delta ticks (volumen real del propio símbolo — válido para cualquier par)
         delta_score = 0.0
         if self.delta:
             try:
@@ -1634,6 +1762,347 @@ class SignalEngine:
             f"({confluences:.1f}/{MAX_DT})"
         )
         return signal
+
+    def analyze_scalp(self, symbol: str) -> dict | None:
+        """
+        Scalp M5: bias M15 (EMA + estructura) → Order Blocks M5 → entry en
+        retroceso con SL muy corto (extremo OB M5 ± ATR M5). Versión más rápida
+        del daytrade, pensada para forex/índices de tick fino (y oro).
+
+        Señales en AMBAS direcciones según el bias M15, ilimitadas con
+        anti-duplicado por contexto. Ejecución MANUAL — NUNCA se auto-ejecuta.
+        Reusa los mismos vetos de liquidez del daytrade aplicados sobre M5.
+        """
+        sc_cfg = self.config.get("scalp", {}) or {}
+        if not sc_cfg.get("enabled", False):
+            return None
+
+        # Filtro de sesión propio (ej. "7-11,13-17"); sin hours_utc usa la global.
+        now_h      = datetime.now(timezone.utc).hour
+        hours_spec = str(sc_cfg.get("hours_utc", "")).strip()
+        if hours_spec:
+            try:
+                ranges = [tuple(int(x) for x in r.split("-"))
+                          for r in hours_spec.split(",")]
+            except Exception:
+                ranges = []
+            if ranges and not any(lo <= now_h < hi for lo, hi in ranges):
+                return None
+        else:
+            sess = self.config.get("sessions", {}).get("allowed_hours_utc", {})
+            if not (int(sess.get("start", 7)) <= now_h < int(sess.get("end", 21))):
+                return None
+
+        min_rr          = float(sc_cfg.get("min_rr", 1.5))
+        tp2_rr          = float(sc_cfg.get("tp2_rr", 2.5))
+        atr_mult        = float(sc_cfg.get("atr_sl_multiplier", 1.2))
+        min_confluences = float(sc_cfg.get("min_confluences", 3.5))
+        spread_sl_pct   = float(sc_cfg.get("max_spread_sl_pct", 0.20))
+        dkey            = symbol + "_sc"
+        MAX_SC          = 6.5  # escala propia del modelo scalp
+
+        # ── 0. Régimen — HIGH_VOL bloquea también el scalp ─────────
+        regime_data = {}
+        if self.regime:
+            try:
+                regime_data = self.regime.analyze(symbol)
+                if not regime_data.get("trade_allowed", True):
+                    return self._discard(
+                        dkey, f"[SC] Régimen {regime_data.get('regime')} — "
+                              f"volatilidad extrema, bloqueado")
+            except Exception as e:
+                logger.debug(f"[SC] Regime engine: {e}")
+
+        # ── 1. Datos M5 + M15 (bias) + H1 (contexto HTF) ───────────
+        df_m5  = self._get_data(symbol, "M5", 300)
+        df_m15 = self._get_data(symbol, "M15", 200)
+        if df_m5.empty or df_m15.empty:
+            return self._discard(dkey, "[SC] Sin datos M5/M15 de MT5")
+
+        # Analizar UNA vez por vela M5 cerrada (el ciclo corre cada 60s)
+        last_bar = str(df_m5["time"].iloc[-1])
+        if self._last_scalp_bar.get(symbol) == last_bar:
+            return None
+        self._last_scalp_bar[symbol] = last_bar
+
+        # ── 2. Bias intradía M15 (cualquier dirección) ─────────────
+        ema_bias_m15 = get_ema_bias(df_m15)
+        struct_m15b  = detect_market_structure(df_m15, lookback=5)
+        bias = ema_bias_m15 if ema_bias_m15 != "NEUTRAL" else struct_m15b["trend"]
+        if bias == "NEUTRAL":
+            return self._discard(dkey, "[SC] Bias M15 NEUTRAL — sin dirección")
+        direction   = "BUY" if bias == "BULLISH" else "SELL"
+        target_type = "BULLISH" if direction == "BUY" else "BEARISH"
+
+        # ── 3. Precio, ATRs, RSI M5 ────────────────────────────────
+        tick = self.mt5.get_current_price(symbol)
+        if not tick:
+            return self._discard(dkey, "[SC] Sin precio actual de MT5")
+        price = float(tick["ask"]) if direction == "BUY" else float(tick["bid"])
+
+        atr_m5  = df_m5["atr"].iloc[-1]  if "atr" in df_m5.columns  else None
+        atr_m15 = df_m15["atr"].iloc[-1] if "atr" in df_m15.columns else None
+        if atr_m5 is None or pd.isna(atr_m5) or float(atr_m5) == 0:
+            return self._discard(dkey, "[SC] ATR M5 no disponible")
+        atr_m5  = float(atr_m5)
+        atr_m15 = float(atr_m15) if atr_m15 is not None and not pd.isna(atr_m15) else atr_m5 * 3
+
+        rsi_val = float(df_m5["rsi"].iloc[-1]) if "rsi" in df_m5.columns else 50.0
+        if (direction == "BUY" and rsi_val > 75) or (direction == "SELL" and rsi_val < 25):
+            return self._discard(
+                dkey, f"[SC] RSI M5 {rsi_val:.0f} extremo contra {direction}")
+
+        # Spread: en scalp el coste pesa MUCHO (SL muy corto)
+        spread = float(tick.get("spread", 0) or 0)
+        est_sl = atr_m5 * (atr_mult + 0.5)
+        if spread > 0 and est_sl > 0 and spread > est_sl * spread_sl_pct:
+            return self._discard(
+                dkey, f"[SC] Spread {spread:.5f} > {spread_sl_pct:.0%} del SL "
+                      f"estimado ({est_sl:.5f}) — coste se come el edge")
+
+        # ── 4. Vetos de liquidez (mismos que daytrade, sobre M5) ───
+        liq_cfg   = self.config.get("liquidity", {}) or {}
+        struct_m5 = detect_market_structure(df_m5, lookback=5)
+
+        if liq_cfg.get("sweep_against_veto", False):
+            opposite   = "SELL" if direction == "BUY" else "BUY"
+            sig_levels = get_significant_levels(df_m5)
+            lvls = sig_levels["lows"] if opposite == "BUY" else sig_levels["highs"]
+            if lvls:
+                sweep_against = detect_liquidity_sweep(
+                    df_m5, struct_m5["swing_highs"], struct_m5["swing_lows"],
+                    opposite, lookback=int(liq_cfg.get("sweep_against_lookback", 6)),
+                    levels=lvls,
+                )
+                if sweep_against["swept"]:
+                    return self._discard(
+                        dkey, f"[SC] Veto: barrido contra {direction} en "
+                              f"{sweep_against['level']:.5f}")
+
+        if liq_cfg.get("displacement_filter", False):
+            disp = detect_displacement(
+                df_m5, atr_m5,
+                n_candles=int(liq_cfg.get("displacement_candles", 3)),
+                body_atr=float(liq_cfg.get("displacement_body_atr", 0.8)),
+                net_atr=float(liq_cfg.get("displacement_net_atr", 1.5)),
+                exclude_last=True,
+            )
+            if (disp["direction"] == "BULLISH" and direction == "SELL") or \
+               (disp["direction"] == "BEARISH" and direction == "BUY"):
+                return self._discard(
+                    dkey, f"[SC] Veto: impulso {disp['direction']} M5 contra {direction}")
+
+        # ── 5. Order Block M5 ──────────────────────────────────────
+        obs_m5 = find_order_blocks(df_m5, n_recent=40)
+        ob = self._find_nearest_ob(obs_m5, price, direction, atr_m5, target_type)
+        if ob is None:
+            return self._discard(
+                dkey, f"[SC] Sin Order Block {target_type} M5 cerca del precio")
+
+        # ── 6. Niveles: entry retroceso al OB, SL muy corto M5 ─────
+        inside_ob = ob["bottom"] <= price <= ob["top"]
+        if direction == "BUY":
+            entry      = price if inside_ob else float(ob["top"])
+            sl         = float(ob["bottom"]) - atr_m5 * atr_mult
+            entry_type = "MARKET" if inside_ob else "RETRACEMENT"
+            risk       = entry - sl
+            if risk <= 0:
+                return self._discard(dkey, "[SC] Riesgo cero")
+            tp1 = entry + risk * min_rr
+            tp2 = entry + risk * tp2_rr
+        else:
+            entry      = price if inside_ob else float(ob["bottom"])
+            sl         = float(ob["top"]) + atr_m5 * atr_mult
+            entry_type = "MARKET" if inside_ob else "RETRACEMENT"
+            risk       = sl - entry
+            if risk <= 0:
+                return self._discard(dkey, "[SC] Riesgo cero")
+            tp1 = entry - risk * min_rr
+            tp2 = entry - risk * tp2_rr
+
+        # ── 7. Noticias ────────────────────────────────────────────
+        avoid_min = self.config.get("sessions", {}).get("avoid_news_minutes", 30)
+        try:
+            news_stat = self.news.is_news_blackout(minutes_buffer=avoid_min)
+        except Exception:
+            news_stat = {"blackout": False, "reason": ""}
+        news_warn = news_stat["reason"] if news_stat["blackout"] else ""
+
+        # ── 8. Confluencias (escala propia, máx 6.5) ───────────────
+        confluences = 0.0
+        cf_details  = []
+
+        confluences += 1.5; cf_details.append(f"Bias M15 {bias}")
+
+        # Estructura M5 alineada (BOS/CHoCH a favor)
+        ev_m5 = struct_m5.get("last_event")
+        if struct_m5["trend"] == bias or (ev_m5 and ev_m5["direction"] == bias):
+            confluences += 1.0
+            cf_details.append(f"Estructura M5 {struct_m5['trend']}")
+
+        # RSI M5
+        if (direction == "BUY" and rsi_val < 40) or \
+           (direction == "SELL" and rsi_val > 60):
+            confluences += 0.5; cf_details.append(f"RSI M5 {rsi_val:.0f} a favor")
+        elif 40 <= rsi_val <= 60:
+            confluences += 0.25
+
+        if not news_stat["blackout"]:
+            confluences += 0.5; cf_details.append("Sin noticias")
+
+        # Volume Profile COMEX — SOLO oro (perfil de GC=F)
+        vp_score = 0.0
+        if self.vp and self._is_gold(symbol):
+            try:
+                vp_score, vp_desc = self.vp.get_confluence(
+                    price=price, direction=direction, atr=atr_m5, spot_price=price
+                )
+                vp_score = min(vp_score, 1.0)
+                if vp_score > 0:
+                    confluences += vp_score
+                    cf_details.append(vp_desc)
+            except Exception as e:
+                logger.debug(f"[SC] VP: {e}")
+
+        # Delta ticks (volumen real del propio símbolo — vale para cualquier par)
+        delta_score = 0.0
+        if self.delta:
+            try:
+                delta_score, delta_desc = self.delta.get_confluence(
+                    symbol=symbol, direction=direction, df_h1=df_m5
+                )
+                delta_score = max(-0.5, min(delta_score, 0.5))
+                if delta_score != 0:
+                    confluences += delta_score
+                    if delta_desc:
+                        cf_details.append(delta_desc)
+            except Exception as e:
+                logger.debug(f"[SC] Delta: {e}")
+
+        # Sweep a favor en M5 (stop hunt + reclaim)
+        sweep_score = 0.0
+        try:
+            sweep = detect_liquidity_sweep(
+                df_m5, struct_m5["swing_highs"], struct_m5["swing_lows"], direction
+            )
+            if sweep["swept"]:
+                sweep_score = 1.0
+                confluences += sweep_score
+                cf_details.append(f"Sweep M5 en {sweep['level']:.5f}")
+        except Exception:
+            pass
+
+        # FVG M5 alineado con el entry
+        fvg_score = 0.0
+        try:
+            for gap in find_fair_value_gaps(df_m5, n_recent=40):
+                if not gap["valid"] or gap["type"] != target_type:
+                    continue
+                if gap["bottom"] <= entry <= gap["top"] or \
+                   abs(entry - gap["midpoint"]) <= atr_m5 * 0.5:
+                    fvg_score = 0.5
+                    confluences += fvg_score
+                    cf_details.append(f"FVG M5 {gap['bottom']:.5f}-{gap['top']:.5f}")
+                    break
+        except Exception:
+            pass
+
+        # Régimen trending a favor
+        regime_str = regime_data.get("regime", "UNKNOWN")
+        if (regime_str == "TRENDING_UP" and direction == "BUY") or \
+           (regime_str == "TRENDING_DOWN" and direction == "SELL"):
+            confluences += 0.5
+            cf_details.append(f"Régimen {regime_str}")
+
+        confidence = min(confluences / MAX_SC, 1.0)
+
+        if confluences < min_confluences:
+            return self._discard(
+                dkey, f"[SC] {confluences:.1f} confluencias < mínimo {min_confluences}")
+
+        if self._is_scalp_duplicate(symbol, direction, entry, atr_m5, ob=ob):
+            return self._discard(
+                dkey, f"[SC] Duplicada: misma idea {direction} ya enviada")
+
+        # ── 9. Señal ───────────────────────────────────────────────
+        signal = {
+            "symbol":             symbol,
+            "direction":          direction,
+            "entry":              round(entry, 5),
+            "sl":                 round(sl, 5),
+            "tp1":                round(tp1, 5),
+            "tp2":                round(tp2, 5),
+            "rr":                 round(min_rr, 2),
+            "confidence":         round(confidence, 2),
+            "confluences":        round(confluences, 1),
+            "confluence_details": cf_details,
+            "timeframe":          "M5",
+            "mode":               "SCALP",
+            "model":              "SCALP",
+            "max_confluences":    MAX_SC,
+            "bias_h4":            f"{bias} (M15)",
+            "structure_h1":       struct_m5["trend"],
+            "ob_type":            ob["type"],
+            "ob_midpoint":        float(ob["midpoint"]),
+            "rsi_state":          "OVERBOUGHT" if rsi_val > 70 else
+                                  ("OVERSOLD" if rsi_val < 30 else "NEUTRAL"),
+            "rsi_value":          round(rsi_val, 1),
+            "news_warning":       news_warn,
+            "news_blackout":      news_stat["blackout"],
+            "regime":             regime_str,
+            "regime_adx":         float(regime_data.get("adx", 20)),
+            "regime_hurst":       float(regime_data.get("hurst", 0.5)),
+            "vp_score":           float(vp_score),
+            "delta_score":        float(delta_score),
+            "sweep_score":        float(sweep_score),
+            "fvg_score":          float(fvg_score),
+            "m15_aligned":        1,
+            "htf_liq_dist":       99.0,
+            "ml_proba":           0.5,   # ML entrenado en features H1 — no aplica
+            "atr":                round(atr_m5, 5),
+            "atr_pct":            round(atr_m5 / price * 100, 3) if price > 0 else 0,
+            "entry_type":         entry_type,
+            "timestamp":          datetime.now(timezone.utc).isoformat(),
+            # Niveles nativos M5 → los bloques MI CUENTA / 2K los usan directo
+            "funded_levels":      {"entry": round(entry, 5), "sl": round(sl, 5),
+                                   "refined": True},
+        }
+        if sc_cfg.get("alert_only", True):
+            signal["no_auto_execute"] = True
+
+        self._last_scalp_signals[symbol] = signal
+        logger.info(
+            f"[SC] [{symbol}] SEÑAL {direction} M5 | Entry:{entry:.5f} SL:{sl:.5f} "
+            f"TP1:{tp1:.5f} | R:R:{min_rr:.1f} | Conf:{confidence:.0%} "
+            f"({confluences:.1f}/{MAX_SC})"
+        )
+        return signal
+
+    def _is_scalp_duplicate(self, symbol, direction, entry,
+                            atr_m5: float = 0.0, ob: dict | None = None):
+        """Anti-duplicado por contexto del scalp (igual lógica que daytrade,
+        sobre M5). Cambio de dirección NUNCA se bloquea."""
+        last = self._last_scalp_signals.get(symbol)
+        if not last or last.get("direction") != direction:
+            return False
+        if not atr_m5 or atr_m5 <= 0:
+            return False
+        try:
+            same_entry = abs(float(entry) - float(last.get("entry", 0))) < atr_m5 * 0.5
+            last_mid   = last.get("ob_midpoint")
+            same_ob    = (
+                ob is not None and last_mid is not None
+                and abs(float(ob.get("midpoint", 0)) - float(last_mid)) < atr_m5 * 0.25
+            )
+            if same_entry or same_ob:
+                logger.info(
+                    f"[SC] [{symbol}] {direction} duplicada por contexto "
+                    f"({'mismo OB M5' if same_ob else 'entry sin cambio'})"
+                )
+                return True
+        except Exception:
+            pass
+        return False
 
     def _is_daytrade_duplicate(self, symbol, direction, entry,
                                atr_m15: float = 0.0, ob: dict | None = None):

@@ -45,6 +45,7 @@ import MetaTrader5 as mt5
 from data.mt5_connector import MT5Connector
 from data.news_feed import NewsFeed
 from data.macro_feed import MacroFeed
+from data.intermarket_feed import IntermarketFeed
 from analysis.signal_engine import SignalEngine
 from analysis.indicators import add_indicators, get_ema_bias, get_rsi_state
 from analysis.market_structure import detect_market_structure, find_order_blocks
@@ -54,13 +55,16 @@ from risk.funded_account import FundedAccountTracker
 from risk.personal_account import PersonalAccountTracker
 from alerts.telegram_bot import TelegramBot
 from alerts.news_alerts import NewsAlertManager
+from alerts.signal_dedup import SignalDedup
 from ml.outcome_tracker import OutcomeTracker
 from ml.learning_engine import LearningEngine
+from ml.neural_engine import NeuralEngine
 from trade.executor import TradeExecutor
 from trade.trade_manager import TradeManager
 from analysis.volume_profile import VolumeProfileEngine
 from analysis.delta_engine import DeltaEngine
 from analysis.market_regime import MarketRegimeEngine
+from analysis.quant_engine import QuantEngine
 
 
 # ──────────────────────────────────────────────────────────────
@@ -154,6 +158,14 @@ def init_database(db_path: str):
         ("personal_sl",       "REAL DEFAULT NULL"),
         ("personal_pnl",      "REAL DEFAULT NULL"),
         ("personal_applied",  "INTEGER DEFAULT 0"),
+        # Features intermarket + quant (upgrade 2026-06-17) — para entrenar el ML/NN
+        ("inter_score",     "REAL DEFAULT NULL"),
+        ("real_yield_imp",  "REAL DEFAULT NULL"),
+        ("cot_impact",      "REAL DEFAULT NULL"),
+        ("cot_percentile",  "REAL DEFAULT NULL"),
+        ("garch_vol",       "REAL DEFAULT NULL"),
+        ("kalman_slope",    "REAL DEFAULT NULL"),
+        ("neural_proba",    "REAL DEFAULT NULL"),  # LSTM modo sombra (no veta)
     ]
     for col, decl in migrations:
         try:
@@ -186,6 +198,18 @@ def init_database(db_path: str):
         )
     """)
 
+    # Índices para acelerar las consultas de stats/outcome/risk cuando la
+    # tabla signals crece (antes: full scan en cada /status, risk, ML).
+    for idx_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_signals_ts      ON signals(timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_signals_outcome ON signals(outcome)",
+        "CREATE INDEX IF NOT EXISTS idx_signals_symbol  ON signals(symbol)",
+    ):
+        try:
+            cursor.execute(idx_sql)
+        except Exception:
+            pass
+
     conn.commit()
     conn.close()
     logger.info(f"Base de datos lista: {db_path}")
@@ -209,8 +233,10 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
             funded_lots, funded_risk_usd, funded_apta, funded_entry, funded_sl,
             model,
             personal_lots, personal_risk_acc, personal_apta,
-            personal_entry, personal_sl
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            personal_entry, personal_sl,
+            inter_score, real_yield_imp, cot_impact, cot_percentile,
+            garch_vol, kalman_slope, neural_proba
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         signal.get("timestamp"),
         signal.get("symbol"),
@@ -256,6 +282,14 @@ def save_signal(signal: dict, lot_size: float, sent_tg: bool, db_path: str):
         int(personal.get("apta", False)),
         personal.get("entry"),
         personal.get("sl"),
+        # Features intermarket + quant (upgrade 2026-06-17)
+        signal.get("inter_score"),
+        (signal.get("intermarket") or {}).get("real_yields", {}).get("gold_impact"),
+        (signal.get("intermarket") or {}).get("cot", {}).get("gold_impact"),
+        (signal.get("intermarket") or {}).get("cot", {}).get("percentile"),
+        signal.get("garch_vol"),
+        signal.get("kalman_slope"),
+        signal.get("neural_proba"),
     ))
     conn.commit()
     conn.close()
@@ -376,14 +410,12 @@ tags:
 - Módulos: SMC + VP COMEX + Delta ticks + TPO + ML + Macro + DXY + FVG + Sweep + M15
 - Gestión activa: entry retroceso OB · parcial 50% en TP1 · runner a TP2 con trailing ATR
 
-## Streams de señales (3 en paralelo)
-- 📊 INTRADAY H1: auto-ejecutada en demo (backtest validado)
+## Streams de señales (2 en paralelo)
+- 📊 INTRADAY H1: auto-ejecutada en demo (aprendizaje — el producto son las señales)
 {dt_line}
-- 📅 SWING D1→H4: 1-3/semana, manual
 
-## Cuentas manuales (bloques en cada señal Telegram)
+## Cuenta manual (bloque en cada señal Telegram)
 {p_line}
-- 🏦 FUNDEDNEXT 2K: trailing DD 6% | /funded · /equity para sync
 
 ## Backtest validado (XAUUSD H1, 1 año con comisiones — upgrade 2026-06-11)
 - Win Rate: **42.1%** | PF: **1.61** | Max DD: **12.0%** | Sharpe: **3.02** | Retorno: **+105%**
@@ -399,6 +431,7 @@ tags:
 - Delta/Footprint (ticks MT5): activo por barra H1
 - Ejecución MT5: automática (LIMIT orders) — órdenes expiran en 8h
 - Telegram bidireccional: /cancelar /modificar /cerrar
+- /radiografia — qué dice cada módulo del cerebro sobre XAUUSD ahora (o RADIOGRAFIA.bat)
 
 ## Para la próxima sesión con Claude
 - Acumular 20+ trades cerrados → ML se entrena automáticamente
@@ -597,6 +630,15 @@ class TradingSystem:
         # Régimen de mercado cuántico (Hurst + ADX + Volatility)
         self.regime = MarketRegimeEngine(self.mt5)
 
+        # Intermarket: rendimientos reales (FRED/TIP) + COT + oro/plata + riesgo
+        self.intermarket = IntermarketFeed(config, mt5_connector=self.mt5)
+
+        # Red neuronal LSTM (modo sombra) — se carga sola si existe el modelo
+        self.neural = NeuralEngine()
+
+        # Quant: GARCH (volatilidad prevista) + Kalman (tendencia suavizada)
+        self.quant = QuantEngine(config)
+
         # Motor de señales con todos los módulos
         self.signals = SignalEngine(
             self.mt5, self.news, config,
@@ -606,6 +648,9 @@ class TradingSystem:
             volume_profile=self.vp,
             delta_engine=self.delta,
             regime_engine=self.regime,
+            intermarket_feed=self.intermarket,
+            neural_engine=self.neural,
+            quant_engine=self.quant,
         )
 
         tg = config.get("telegram", {})
@@ -613,6 +658,11 @@ class TradingSystem:
             bot_token=tg.get("bot_token", ""),
             chat_id=tg.get("chat_id", ""),
         )
+
+        # Deduplicador PERSISTENTE de señales (fix spam Telegram 2026-07):
+        # última línea de defensa antes de enviar/guardar. Sobrevive reinicios
+        # (tabla sent_signals en trades.db) y cubre los 4 streams por igual.
+        self.dedup = SignalDedup(self.db_path, config)
 
         # Alertas proactivas de noticias (T-60/T-15 + post-release)
         self.news_alerts = NewsAlertManager(self.news, self.telegram, config)
@@ -630,9 +680,14 @@ class TradingSystem:
         primary   = config["symbols"]["primary"]
         secondary = config["symbols"].get("secondary", [])
         self.symbols = [primary] + secondary
+        # alt: forex/indices SOLO para los streams alert-only (daytrade M15 + scalp M5).
+        # NUNCA entran en self.symbols -> nunca pasan por analyze() (stream H1 que
+        # auto-ejecuta en demo con el cerebro del oro). Se rellena tras validar backtest.
+        self.alt_symbols = config["symbols"].get("alt", []) or []
         self._cycle_count = 0
         self._autotrading_warned = False
         self._known_positions = set()  # tickets de posiciones abiertas
+        self._last_digest_date = None  # guard "1 digest al día" (hora UTC)
 
     def start(self):
         """Inicializa conexiones y verifica el setup."""
@@ -697,8 +752,20 @@ class TradingSystem:
         elif ctype == "revisar":
             self._send_revisar()
 
+        elif ctype == "radiografia":
+            self._send_radiografia()
+
+        elif ctype == "salud":
+            self._send_salud()
+
         elif ctype == "funded":
-            self.telegram.send_funded_status(self.funded.get_state())
+            if self.config.get("funded", {}).get("enabled", False):
+                self.telegram.send_funded_status(self.funded.get_state())
+            else:
+                self.telegram.send_message(
+                    "🏦 La cuenta de fondeo está <b>desactivada</b>. "
+                    "El bot solo envía señales y opera la demo para aprender."
+                )
 
         elif ctype == "micuenta":
             self.telegram.send_personal_status(self.personal.get_state())
@@ -720,6 +787,11 @@ class TradingSystem:
                 )
 
         elif ctype == "equity":
+            if not self.config.get("funded", {}).get("enabled", False):
+                self.telegram.send_message(
+                    "🏦 La cuenta de fondeo está <b>desactivada</b> — /equity no aplica."
+                )
+                return
             amount = cmd.get("amount", 0)
             result = self.funded.set_equity(amount)
             if result.get("ok"):
@@ -733,6 +805,68 @@ class TradingSystem:
                     f"❌ /equity: {result.get('error', 'error desconocido')}\n"
                     f"Uso: <code>/equity 1985.50</code>"
                 )
+
+        elif ctype == "lote":
+            self._send_lote(cmd.get("room", 0), cmd.get("entry", 0),
+                            cmd.get("sl", 0), cmd.get("symbol", "XAUUSD"))
+
+    def _risk_per_lot(self, symbol: str, sl_dist: float) -> float:
+        """Moneda de cuenta que arriesga 1.0 lote para una distancia de SL en precio
+        (gold/JPY/forex/índices vía symbols.contracts). Mismo criterio que el lotaje."""
+        sym = symbol.upper()
+        contracts = (self.config.get("symbols", {}) or {}).get("contracts", {}) or {}
+        if any(x in sym for x in ("XAU", "GOLD")):
+            return sl_dist * 100.0
+        if sym in contracts:
+            c = contracts[sym]; pip = float(c.get("pip", 1.0)) or 1.0
+            return (sl_dist / pip) * float(c.get("value_per_lot", 1.0))
+        if "JPY" in sym:
+            return (sl_dist / 0.01) * 9.0
+        return (sl_dist / 0.0001) * 10.0
+
+    def _send_lote(self, room: float, entry: float, sl: float, symbol: str,
+                   riskpct: float = 10.0):
+        """Responde /lote: lote máx para una cuenta fondeada según el COLCHÓN (room)
+        de drawdown restante — no el balance. 1% del balance puede ser 50% del room."""
+        sl_dist = abs(entry - sl)
+        if room <= 0 or sl_dist <= 0:
+            self.telegram.send_message(
+                "❌ /lote: datos inválidos.\n"
+                "Uso: <code>/lote &lt;room$&gt; &lt;entry&gt; &lt;sl&gt; [símbolo]</code>\n"
+                "Ej: <code>/lote 120 4195 4210</code> (oro) · "
+                "<code>/lote 120 39000 38950 US30</code>"
+            )
+            return
+        rpl       = self._risk_per_lot(symbol, sl_dist)
+        risk_001  = rpl * 0.01
+        budget    = room * riskpct / 100.0
+        lines = [
+            f"📐 <b>LOTE FONDEADA — {symbol}</b>",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"🛡️ Colchón (room): <b>${room:,.2f}</b>",
+            f"🎯 Presupuesto: <b>${budget:,.2f}</b> ({riskpct:.0f}% del room)",
+            f"📏 SL: {sl_dist:.5f} → 0.01 lote arriesga <b>${risk_001:,.2f}</b> "
+            f"({risk_001/room*100:.0f}% del room)",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+        if risk_001 > budget:
+            max_dist = budget / (rpl / sl_dist) / 0.01 if rpl > 0 else 0
+            lines += [
+                f"❌ <b>NO VIABLE</b>: ni el lote mínimo cabe.",
+                f"El SL no puede arriesgar más de <b>${budget:,.2f}</b> "
+                f"(máx ~{max_dist:.5f} de distancia).",
+                f"<i>Con tan poco colchón, casi ningún trade normal es seguro.</i>",
+            ]
+        else:
+            max_lot = max(0.0, int(budget / rpl / 0.01) * 0.01)
+            n = int(room / (max_lot * rpl)) if max_lot * rpl > 0 else 0
+            lines += [
+                f"✅ <b>LOTE MÁX: {max_lot:.2f}</b> → riesgo ${max_lot*rpl:,.2f} "
+                f"({max_lot*rpl/room*100:.0f}% del room)",
+                f"Aguantas ~{n} pérdidas seguidas a ese lote.",
+            ]
+        lines.append("<i>En fondeo: dimensiona contra el ROOM, no el balance (5-10%/trade).</i>")
+        self.telegram.send_message("\n".join(lines))
 
     def _send_status(self):
         """Responde /status con estadísticas en tiempo real."""
@@ -773,6 +907,101 @@ class TradingSystem:
             self.telegram.send_message(msg)
         except Exception as e:
             logger.warning(f"/status error: {e}")
+
+    def _send_salud(self):
+        """Responde /salud — estado de las fuentes de datos por FRESCURA de
+        caché (no dispara fetches lentos que bloqueen el ciclo). Solo MT5 se
+        prueba en vivo (es local y rápido). Marca ✅ OK / ⚠️ STALE / ❌ FAIL."""
+        try:
+            now = datetime.now(timezone.utc)
+
+            def _age_min(ts):
+                if ts is None:
+                    return None
+                try:
+                    if isinstance(ts, str):
+                        ts = datetime.fromisoformat(ts)
+                    return (now - ts).total_seconds() / 60.0
+                except Exception:
+                    return None
+
+            def _line(name, age, limit_min):
+                if age is None:
+                    return f"❌ <b>{name}</b>: sin datos"
+                icon = "✅" if age <= limit_min else "⚠️"
+                tag  = "OK" if age <= limit_min else "STALE"
+                return f"{icon} <b>{name}</b>: {tag} (hace {age:.0f} min)"
+
+            lines = ["🩺 <b>SALUD DE FUENTES DE DATOS</b>",
+                     "━━━━━━━━━━━━━━━━━━━━━━"]
+
+            # MT5 — prueba en vivo (local, rápida)
+            try:
+                mt5s = self.mt5.test_connection()
+                if mt5s.get("ok"):
+                    lines.append(f"✅ <b>MT5</b>: OK (cuenta {mt5s.get('login')}, "
+                                 f"{mt5s.get('balance', 0):,.0f} {mt5s.get('currency','')})")
+                else:
+                    lines.append(f"❌ <b>MT5</b>: {mt5s.get('error','sin conexión')}")
+            except Exception as e:
+                lines.append(f"❌ <b>MT5</b>: {e}")
+
+            # Macro yfinance (VIX/yields/SPX) — caché 30 min
+            lines.append(_line("Macro (yfinance)",
+                               _age_min(getattr(self.macro, "_cache_time", None)), 35))
+
+            # Volume Profile COMEX (GC=F) — caché 60 min
+            lines.append(_line("VP COMEX (GC=F)",
+                               _age_min(getattr(self.vp, "_cache_time", None)), 65))
+
+            # Intermarket (reales/COT/oro-plata) — por mtime del cache en disco
+            try:
+                icf = os.path.join(os.path.dirname(__file__), "logs", "intermarket_cache.json")
+                if os.path.exists(icf):
+                    age = (now.timestamp() - os.path.getmtime(icf)) / 60.0
+                    lines.append(_line("Intermarket (FRED/COT)", age, 720))
+                else:
+                    lines.append("⚠️ <b>Intermarket (FRED/COT)</b>: sin caché aún")
+            except Exception:
+                lines.append("❌ <b>Intermarket (FRED/COT)</b>: error leyendo caché")
+
+            # Dedup persistente — nº de fingerprints activos (últimas 24h)
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=5)
+                n = conn.execute("SELECT COUNT(*) FROM sent_signals").fetchone()[0]
+                conn.close()
+                lines.append(f"✅ <b>Anti-duplicado</b>: activo ({n} señales registradas 24h)")
+            except Exception:
+                lines.append("⚠️ <b>Anti-duplicado</b>: tabla no inicializada")
+
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("<i>STALE = la fuente cayó y el bot usa su última caché. "
+                         "Se auto-recupera al volver la fuente.</i>")
+            self.telegram.send_message("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"/salud error: {e}")
+            self.telegram.send_message(f"❌ /salud error: {e}")
+
+    def _send_radiografia(self):
+        """
+        Responde /radiografia — qué dice CADA módulo del cerebro sobre el
+        símbolo primario ahora mismo (con datos reales), más el veredicto de
+        analyze(). Reutiliza los módulos ya cableados en self.
+        """
+        try:
+            from radiografia import gather, render_telegram
+            symbol = self.config["symbols"]["primary"]
+            R = gather(
+                cfg=self.config, symbol=symbol,
+                mt5=self.mt5, news=self.news, corr=self.corr, macro=self.macro,
+                ml=self.ml, vp=self.vp, delta=self.delta, regime=self.regime,
+                inter=self.intermarket, neural=self.neural, quant=self.quant,
+                engine=self.signals,
+            )
+            self.telegram.send_message(render_telegram(R))
+        except Exception as e:
+            logger.warning(f"/radiografia error: {e}")
+            self.telegram.send_message(f"❌ /radiografia: {e}")
 
     def _send_estado(self):
         """
@@ -1169,42 +1398,35 @@ class TradingSystem:
                                 f"TP1:{swing_sig['tp1']} | R:R:{swing_sig['rr']} | "
                                 f"Conf:{swing_sig['confidence']:.0%} | Lotes:{s_lot}"
                             )
-                            self.telegram.send_signal(swing_sig)
-                            save_signal(swing_sig, s_lot, True, self.db_path)
+                            if self.dedup.should_send(swing_sig):
+                                self.dedup.mark_sent(swing_sig)
+                                self.telegram.send_signal(swing_sig)
+                                save_signal(swing_sig, s_lot, True, self.db_path)
+                            else:
+                                logger.info(
+                                    f"[SWING] [{symbol}] {swing_sig['direction']} "
+                                    "duplicada (dedup persistente) — no se reenvía"
+                                )
                     except Exception as sw_e:
                         logger.debug(f"Swing analysis {symbol}: {sw_e}")
 
-                # ── Señal DAYTRADE M15 — corre SIEMPRE, en paralelo ─────
-                # Stream ilimitado para ejecución MANUAL (cuenta personal +
-                # 2K). alert_only: nunca coloca órdenes en MT5.
+                # ── Señales MANUALES (alert-only) en paralelo: DAYTRADE M15 +
+                # SCALP M5. Nunca colocan órdenes en MT5. Dispatch unificado en
+                # _emit_manual_signal (bloque MI CUENTA / 2K + Telegram + DB).
                 if self.config.get("daytrade", {}).get("enabled", False):
                     try:
-                        dt_sig = self.signals.analyze_daytrade(symbol)
-                        if dt_sig is not None:
-                            try:
-                                dt_funded = self.funded.evaluate_signal(dt_sig)
-                                if dt_funded:
-                                    dt_sig["funded"] = dt_funded
-                            except Exception as fe:
-                                logger.debug(f"Funded daytrade: {fe}")
-                            try:
-                                dt_personal = self.personal.evaluate_signal(
-                                    dt_sig, eurusd=eurusd_rate)
-                                if dt_personal:
-                                    dt_sig["personal"] = dt_personal
-                            except Exception as pe:
-                                logger.debug(f"Personal daytrade: {pe}")
-                            if dd_warning:
-                                dt_sig["dd_warning"] = dd_warning
-                            logger.info(
-                                f"[DAYTRADE] [{symbol}] {dt_sig['direction']} M15 | "
-                                f"Entry:{dt_sig['entry']} SL:{dt_sig['sl']} "
-                                f"TP1:{dt_sig['tp1']} | Conf:{dt_sig['confidence']:.0%}"
-                            )
-                            self.telegram.send_signal(dt_sig)
-                            save_signal(dt_sig, 0.0, True, self.db_path)
+                        self._emit_manual_signal(
+                            self.signals.analyze_daytrade(symbol),
+                            eurusd_rate, dd_warning)
                     except Exception as dt_e:
                         logger.debug(f"Daytrade analysis {symbol}: {dt_e}")
+                if self.config.get("scalp", {}).get("enabled", False):
+                    try:
+                        self._emit_manual_signal(
+                            self.signals.analyze_scalp(symbol),
+                            eurusd_rate, dd_warning)
+                    except Exception as sc_e:
+                        logger.debug(f"Scalp analysis {symbol}: {sc_e}")
 
                 if signal is None:
                     continue
@@ -1216,6 +1438,17 @@ class TradingSystem:
                     logger.info(f"[{symbol}] {can_exec['reason']} — señal enviada solo informativa")
 
                 market_state["symbols"][symbol]["last_signal_time"] = signal["timestamp"]
+
+                # Dedup persistente: una señal H1 idéntica (mismo stream/vela/
+                # dirección) no se reenvía ni tras reinicio. Se salta ANTES de
+                # ejecutar en MT5 para no colocar una orden duplicada tampoco.
+                if not self.dedup.should_send(signal):
+                    logger.info(
+                        f"[{symbol}] Señal H1 {signal['direction']} duplicada "
+                        "(dedup persistente) — no se reenvía ni ejecuta"
+                    )
+                    continue
+                self.dedup.mark_sent(signal)
 
                 # Calcular lot size: racha × confianza de la señal × equity viva
                 streak_mult = self.risk.get_risk_multiplier(self.db_path)
@@ -1232,18 +1465,20 @@ class TradingSystem:
                     )
                 signal["lot_size"] = lot
 
-                # Bloque FundedNext 2K: lotes/riesgo/apta para ejecución manual
-                try:
-                    funded_block = self.funded.evaluate_signal(signal)
-                    if funded_block:
-                        # Modelo reversal: experimental hasta validar en vivo —
-                        # nunca apta para la cuenta fondeada
-                        if signal.get("model") == "SWEEP_REVERSAL" and funded_block.get("apta"):
-                            funded_block["apta"] = False
-                            funded_block["reasons"] = ["modelo reversal experimental — no validado"]
-                        signal["funded"] = funded_block
-                except Exception as e:
-                    logger.debug(f"Funded evaluate: {e}")
+                # Bloque FundedNext 2K: solo si la cuenta de fondeo está activa
+                # (desactivada 2026-06-17 — el usuario la quitó)
+                if self.config.get("funded", {}).get("enabled", False):
+                    try:
+                        funded_block = self.funded.evaluate_signal(signal)
+                        if funded_block:
+                            # Modelo reversal: experimental hasta validar en vivo —
+                            # nunca apta para la cuenta fondeada
+                            if signal.get("model") == "SWEEP_REVERSAL" and funded_block.get("apta"):
+                                funded_block["apta"] = False
+                                funded_block["reasons"] = ["modelo reversal experimental — no validado"]
+                            signal["funded"] = funded_block
+                    except Exception as e:
+                        logger.debug(f"Funded evaluate: {e}")
 
                 # Bloque MI CUENTA: lotes/riesgo/apta para tu cuenta personal
                 try:
@@ -1335,6 +1570,25 @@ class TradingSystem:
             except Exception as e:
                 logger.error(f"Error analizando {symbol}: {e}", exc_info=True)
 
+        # ── Símbolos ALT (forex/índices): SOLO streams alert-only ──────────
+        # NO pasan por analyze() (auto-exec H1 gold) ni por la gestión de demo.
+        # Solo DAYTRADE M15 + SCALP M5, que el usuario ejecuta a mano.
+        for symbol in self.alt_symbols:
+            if self.config.get("daytrade", {}).get("enabled", False):
+                try:
+                    self._emit_manual_signal(
+                        self.signals.analyze_daytrade(symbol),
+                        eurusd_rate, dd_warning)
+                except Exception as dt_e:
+                    logger.debug(f"[ALT] Daytrade {symbol}: {dt_e}")
+            if self.config.get("scalp", {}).get("enabled", False):
+                try:
+                    self._emit_manual_signal(
+                        self.signals.analyze_scalp(symbol),
+                        eurusd_rate, dd_warning)
+                except Exception as sc_e:
+                    logger.debug(f"[ALT] Scalp {symbol}: {sc_e}")
+
         # ── Detectar órdenes LIMIT ejecutadas (PENDING → posición abierta) ──
         try:
             current_positions = {p.ticket for p in self.executor.get_open_positions()}
@@ -1373,16 +1627,21 @@ class TradingSystem:
         except Exception as e:
             logger.debug(f"Outcome tracker: {e}")
 
+        # ── Digest diario (resumen + análisis LLM) a la hora UTC configurada ──
+        self._maybe_send_daily_digest()
+
         # ── FundedNext 2K: aplicar resultados resueltos al equity simulado ──
-        try:
-            applied = self.funded.sync_from_db()
-            if applied and self.telegram.enabled:
-                state = self.funded.get_state()
-                for res in applied:
-                    self.telegram.send_funded_result(res, state)
-            self.funded.write_state_json()
-        except Exception as e:
-            logger.debug(f"Funded sync: {e}")
+        # Solo si la cuenta de fondeo está activa (desactivada 2026-06-17)
+        if self.config.get("funded", {}).get("enabled", False):
+            try:
+                applied = self.funded.sync_from_db()
+                if applied and self.telegram.enabled:
+                    state = self.funded.get_state()
+                    for res in applied:
+                        self.telegram.send_funded_result(res, state)
+                self.funded.write_state_json()
+            except Exception as e:
+                logger.debug(f"Funded sync: {e}")
 
         # ── MI CUENTA: aplicar resultados resueltos al equity personal ──
         try:
@@ -1467,6 +1726,48 @@ class TradingSystem:
             update_obsidian_state(self.config, acct_refresh, self.db_path)
         logger.info(f"Ciclo completado - {active_count} posicion(es)/orden(es) activas en demo")
 
+    def _emit_manual_signal(self, sig, eurusd_rate, dd_warning):
+        """
+        Dispatch de una señal alert-only (DAYTRADE M15 o SCALP M5): añade el
+        bloque 2K (si la cuenta fondeada está activa) + el bloque MI CUENTA,
+        la envía por Telegram y la guarda en DB. NUNCA auto-ejecuta en MT5
+        (estas señales son de ejecución manual). sig=None → no hace nada.
+        """
+        if sig is None:
+            return
+        mode = sig.get("mode", "MANUAL")
+        # Dedup persistente: no reenviar la misma idea (mismo stream/vela) ni
+        # tras un reinicio del bot. Cierra Telegram Y el guardado en DB.
+        if not self.dedup.should_send(sig):
+            logger.info(
+                f"[{mode}] [{sig['symbol']}] {sig['direction']} duplicada "
+                "(dedup persistente) — no se reenvía"
+            )
+            return
+        self.dedup.mark_sent(sig)
+        if self.config.get("funded", {}).get("enabled", False):
+            try:
+                fb = self.funded.evaluate_signal(sig)
+                if fb:
+                    sig["funded"] = fb
+            except Exception as fe:
+                logger.debug(f"Funded {mode}: {fe}")
+        try:
+            pb = self.personal.evaluate_signal(sig, eurusd=eurusd_rate)
+            if pb:
+                sig["personal"] = pb
+        except Exception as pe:
+            logger.debug(f"Personal {mode}: {pe}")
+        if dd_warning:
+            sig["dd_warning"] = dd_warning
+        logger.info(
+            f"[{mode}] [{sig['symbol']}] {sig['direction']} {sig.get('timeframe','')} | "
+            f"Entry:{sig['entry']} SL:{sig['sl']} TP1:{sig['tp1']} | "
+            f"Conf:{sig['confidence']:.0%}"
+        )
+        self.telegram.send_signal(sig)
+        save_signal(sig, 0.0, True, self.db_path)
+
     def _check_dxy_divergence(self, dxy_cfg: dict):
         """
         Compara el DXY sintético (MT5 tiempo real, fórmula ICE 6 pares)
@@ -1500,6 +1801,35 @@ class TradingSystem:
             f"degradado — verifica el DXY en TradingView/FastBull antes de "
             f"ejecutar la próxima señal."
         )
+
+    def _maybe_send_daily_digest(self):
+        """Envía UN digest diario (resumen + análisis LLM) a la hora UTC
+        configurada. Guard por fecha para no repetir. No bloquea el ciclo si
+        falla (fail-safe dentro de build_digest)."""
+        acfg = self.config.get("alerts", {})
+        if not acfg.get("daily_digest_enabled", True):
+            return
+        now = datetime.now(timezone.utc)
+        hour_target = int(acfg.get("daily_digest_hour_utc", 21))
+        today = now.strftime("%Y-%m-%d")
+        if now.hour < hour_target or self._last_digest_date == today:
+            return
+        try:
+            from alerts.daily_digest import build_digest
+            news_ctx = ""
+            try:
+                if getattr(self, "news_sentiment", None):
+                    snap = self.news_sentiment.get_sentiment(self.symbols[0])
+                    news_ctx = snap.get("label", "") if isinstance(snap, dict) else ""
+            except Exception:
+                pass
+            msg = build_digest(self.config, self.db_path, news_ctx=news_ctx)
+            self.telegram.send_message(msg)
+            self._last_digest_date = today
+            logger.info("Digest diario enviado a Telegram")
+        except Exception as e:
+            logger.warning(f"Digest diario error: {e}")
+            self._last_digest_date = today  # no reintentar en bucle si algo falla
 
     def _send_weekly_report(self):
         """Genera y envía el reporte semanal de rendimiento a Telegram."""
@@ -1591,12 +1921,17 @@ if __name__ == "__main__":
         if "--all" in sys.argv:
             symbols_to_test += cfg["symbols"].get("secondary", [])
 
+        # Poblar el almacen de entrenamiento solo en la corrida de produccion
+        # (config real, XAUUSD) — no en baseline/no-filters ni en secundarios
+        record_train = ("--baseline" not in sys.argv and "--no-filters" not in sys.argv)
+
         all_results = {}
         for sym in symbols_to_test:
             print(f"\nIniciando backtest sobre {sym} H1...")
             result = run_backtest(conn, sym, "H1", dt_from, dt_to, cfg,
                                   use_filters=bt_flags["use_filters"],
-                                  use_reversal=bt_flags["use_reversal"])
+                                  use_reversal=bt_flags["use_reversal"],
+                                  record_training=(record_train and sym == cfg["symbols"]["primary"]))
             if result and "metrics" in result:
                 all_results[sym] = result["metrics"]
 

@@ -79,19 +79,19 @@ class TelegramBot:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {now}\n"
             f"💰 Balance: {balance:,.0f} {currency}\n\n"
-            f"Monitoreando XAUUSD — 3 streams de señales:\n"
+            f"Monitoreando XAUUSD — 2 streams de señales:\n"
             f"  ⚡ DAYTRADE M15 (intradía, manual — ilimitadas)\n"
-            f"  📊 INTRADAY H1 (auto-ejecutada en demo)\n"
-            f"  📅 SWING D1→H4 (1-3/semana, manual)\n\n"
-            f"Cada señal lleva bloques 💼 MI CUENTA y 🏦 FUNDEDNEXT 2K\n"
-            f"con lotes y riesgo calculados para cada cuenta.\n\n"
+            f"  📊 INTRADAY H1 (auto-ejecutada en demo para aprender)\n\n"
+            f"Cada señal lleva el bloque 💼 MI CUENTA\n"
+            f"con lotes y riesgo calculados para tu cuenta.\n\n"
             f"<b>Comandos:</b>\n"
             f"  /estado — por qué no hay señal ahora\n"
+            f"  /radiografia — qué dice cada módulo del cerebro ahora\n"
+            f"  /salud — estado de las fuentes de datos\n"
             f"  /status — métricas del sistema\n"
             f"  /micuenta — estado cuenta personal\n"
             f"  /saldo 250.00 — sincronizar saldo personal\n"
-            f"  /funded — estado cuenta 2K\n"
-            f"  /equity 1985.50 — sincronizar equity 2K\n"
+            f"  /lote 120 4195 4210 — lote máx por colchón fondeada\n"
             f"  /revisar — órdenes pendientes"
         )
         return self.send_message(msg)
@@ -238,6 +238,14 @@ class TelegramBot:
             elif cmd == "/revisar":
                 commands.append({"type": "revisar"})
 
+            elif cmd == "/radiografia":
+                # Radiografía en vivo: qué dice cada módulo del cerebro ahora
+                commands.append({"type": "radiografia"})
+
+            elif cmd == "/salud":
+                # Salud de las fuentes de datos (MT5, yfinance, FRED, COT, noticias…)
+                commands.append({"type": "salud"})
+
             elif cmd == "/funded":
                 commands.append({"type": "funded"})
 
@@ -260,6 +268,20 @@ class TelegramBot:
                     commands.append({
                         "type":   "equity",
                         "amount": float(parts[1].replace(",", ".")),
+                    })
+                except ValueError:
+                    pass
+
+            elif cmd == "/lote" and len(parts) >= 4:
+                # /lote <room> <entry> <sl> [symbol] — lote máx según colchón de
+                # drawdown de la cuenta fondeada (dimensiona contra el room, no el balance)
+                try:
+                    commands.append({
+                        "type":   "lote",
+                        "room":   float(parts[1].replace(",", ".")),
+                        "entry":  float(parts[2].replace(",", ".")),
+                        "sl":     float(parts[3].replace(",", ".")),
+                        "symbol": parts[4].upper() if len(parts) >= 5 else "XAUUSD",
                     })
                 except ValueError:
                     pass
@@ -427,6 +449,26 @@ class TelegramBot:
         reasoning    = signal.get("reasoning", "")
         regime       = signal.get("regime", "")
         ml_proba     = signal.get("ml_proba", 0)
+        neural_proba = signal.get("neural_proba")
+        inter        = signal.get("intermarket") or {}
+        inter_score  = signal.get("inter_score", 0) or 0
+
+        # ── Nivel de convicción A/B/C (combina confianza + macro + ML/NN) ──
+        tier_score = float(confidence or 0)
+        inter_aligned = (direction == "BUY" and inter_score > 0.1) or \
+                        (direction == "SELL" and inter_score < -0.1)
+        if inter_aligned:
+            tier_score += 0.10
+        if ml_proba and ml_proba >= 0.55:
+            tier_score += 0.08
+        if neural_proba and neural_proba >= 0.55:
+            tier_score += 0.05
+        if tier_score >= 0.62:
+            tier_lbl = "🅰️ <b>Convicción A</b> (alta)"
+        elif tier_score >= 0.48:
+            tier_lbl = "🅱️ <b>Convicción B</b> (media)"
+        else:
+            tier_lbl = "🅲 <b>Convicción C</b> (baja — informativa)"
 
         dir_emoji = "🟢" if direction == "BUY" else "🔴"
         dir_es    = "COMPRA (Alcista)" if direction == "BUY" else "VENTA (Bajista)"
@@ -452,6 +494,10 @@ class TelegramBot:
             model_hdr = "⚡ <b>DAYTRADE M15</b>  —  intradía, ejecución manual\n"
             tf_header = "H1→M15"
             hdr_tag   = "DAYTRADE "
+        elif mode == "SCALP":
+            model_hdr = "⚡ <b>SCALP M5</b>  —  intradía rápido, ejecución manual\n"
+            tf_header = "M15→M5"
+            hdr_tag   = "SCALP "
         elif signal.get("model") == "SWEEP_REVERSAL":
             model_hdr = "⚡ <b>MODELO: REVERSIÓN POR BARRIDO</b>\n"
             tf_header = "H1"
@@ -464,7 +510,7 @@ class TelegramBot:
         lines = [
             f"📊 <b>{hdr_tag}SETUP {symbol} | {tf_header} | {time_str}</b>",
             f"━━━━━━━━━━━━━━━━━━━━━━",
-            f"{model_hdr}{dir_emoji} <b>{dir_es}</b>",
+            f"{model_hdr}{dir_emoji} <b>{dir_es}</b>   ·   {tier_lbl}",
         ]
 
         # ── Bloque MI CUENTA PRIMERO (tu cuenta real — ejecución manual) ──
@@ -545,10 +591,11 @@ class TelegramBot:
                 )
 
         # ── Niveles de la demo (referencia del análisis) ──────────
-        demo_tf = "H4" if mode == "SWING" else ("M15" if mode == "DAYTRADE" else "H1")
+        demo_tf = "H4" if mode == "SWING" else (
+            "M15" if mode == "DAYTRADE" else ("M5" if mode == "SCALP" else "H1"))
         lines += [
             f"",
-            f"📋 <b>Análisis ({'M15 — sin ejecución demo' if mode == 'DAYTRADE' else 'demo ' + demo_tf}):</b>",
+            f"📋 <b>Análisis ({demo_tf + ' — sin ejecución demo' if mode in ('DAYTRADE', 'SCALP') else 'demo ' + demo_tf}):</b>",
             f"📍 Entrada: <code>{entry:.5f}</code>",
             f"🛑 Stop Loss: <code>{sl:.5f}</code>  ({sl_dist:.5f})",
             f"🎯 TP1: <code>{tp1:.5f}</code>  — R:R 1:{tp1_rr:.1f}",
@@ -564,16 +611,40 @@ class TelegramBot:
 
         regime_str = f" | {regime}" if regime and regime not in ("UNKNOWN", "") else ""
         ml_str     = f" | ML {ml_proba:.0%}" if ml_proba and ml_proba != 0.5 else ""
+        nn_str     = f" | NN {neural_proba:.0%}" if neural_proba and neural_proba != 0.5 else ""
         max_cf     = signal.get("max_confluences", 16.5)
-        bias_lbl   = "Bias H1" if mode == "DAYTRADE" else "Bias H4"
+        bias_lbl   = "Bias H1" if mode == "DAYTRADE" else (
+            "Bias M15" if mode == "SCALP" else "Bias H4")
         lines += [
             f"",
-            f"⚡ <b>Confianza:</b> {confidence:.0%}  ({confluences}/{max_cf}{regime_str}{ml_str})",
+            f"⚡ <b>Confianza:</b> {confidence:.0%}  ({confluences}/{max_cf}{regime_str}{ml_str}{nn_str})",
             f"📈 <b>{bias_lbl}:</b>   {bias_h4}",
         ]
 
         if rsi_val is not None:
             lines.append(f"📉 <b>RSI:</b>       {rsi_val:.1f}  ({rsi_state})")
+
+        # ── Contexto INTERMARKET (datos que el retail no mira) ────
+        if inter:
+            ry  = inter.get("real_yields") or {}
+            cot = inter.get("cot") or {}
+            rt  = inter.get("ratio") or {}
+            im_lines = []
+            if ry.get("trend") and ry["trend"] != "NEUTRAL":
+                flecha = "↓" if ry["trend"] == "BEARISH" else "↑"
+                im_lines.append(
+                    f"  • Reales 10Y {flecha} → {'oro alcista' if ry['trend']=='BEARISH' else 'oro bajista'}")
+            if cot.get("extreme") and cot["extreme"] != "NORMAL":
+                im_lines.append(
+                    f"  • COT {cot['extreme']} (pct {cot.get('percentile','?')})")
+            elif cot.get("percentile") is not None:
+                im_lines.append(
+                    f"  • COT specs: pct {cot.get('percentile')} (net {cot.get('net','?')})")
+            if rt.get("signal") and rt["signal"] != "NEUTRAL":
+                im_lines.append(f"  • Oro/Plata {rt['signal']} (z {rt.get('zscore','?')})")
+            if im_lines:
+                align_txt = "✅ a favor" if inter_aligned else "⚪ neutral/contra"
+                lines += [f"", f"🌍 <b>Intermarket</b> ({align_txt}):"] + im_lines
 
         if cf_details:
             lines += [f"", f"✅ <b>Confluencias:</b>"]

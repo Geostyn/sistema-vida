@@ -1,0 +1,67 @@
+//@version=6
+// =============================================================================
+//  ORO vs TIPOS REALES 10Y  —  driver macro #1 del oro
+//  Relacion INVERSA:  reales 10Y (TIPS) SUBEN -> oro BAJA  |  BAJAN -> oro SUBE
+//  Fuente: FRED:DFII10  (10Y Treasury Inflation-Indexed = "real yield").
+//  Aplicar SOBRE el grafico de XAUUSD (mejor en temporalidad Diaria D o H4).
+//  Replica la logica de tu bot: intermarket_feed.get_real_yields(), umbral +-0.03.
+// =============================================================================
+indicator("Oro vs Tipos Reales 10Y", shorttitle="Reales 10Y", overlay=false)
+
+// ── Entradas ──────────────────────────────────────────────────────────────
+realSym = input.symbol("FRED:DFII10", "Simbolo tipo real 10Y",
+     tooltip="FRED:DFII10 = rendimiento REAL 10Y (TIPS). Alternativas: FRED:DFII5 (5Y), " +
+             "FRED:DFII30 (30Y). Si no carga, real = nominal - breakeven = TVC:US10Y - FRED:T10YIE.")
+chgLen  = input.int(5,    "Barras (dias) para el cambio", minval=1,
+     tooltip="El bot mide el cambio a 5 dias (change_5d).")
+thr     = input.float(0.03, "Umbral del cambio (puntos)", step=0.01,
+     tooltip="Mismo umbral que el bot: +-0.03 puntos define el sesgo.")
+corrLen = input.int(20,   "Ventana correlacion oro/reales", minval=5)
+invert  = input.bool(true,"Invertir linea (alinear con el oro)",
+     tooltip="Invertida: la linea SUBE cuando los reales BAJAN = alcista oro.")
+showTbl = input.bool(true,"Mostrar panel resumen")
+
+// ── Datos (en contexto Diario, sin lookahead) ─────────────────────────────
+realYield = request.security(realSym, "D", close,
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+realChg   = request.security(realSym, "D", close - close[chgLen],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+goldDaily = request.security(syminfo.tickerid, "D", close,
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+corr = ta.correlation(goldDaily, realYield, corrLen)
+
+// ── Sesgo del oro (misma logica que el bot) ───────────────────────────────
+// reales bajan -> oro alcista | reales suben -> oro bajista
+bullGold = realChg <= -thr
+bearGold = realChg >=  thr
+biasTxt  = bullGold ? "Reales v -> ORO ALCISTA" : bearGold ? "Reales ^ -> ORO BAJISTA" : "Reales planos -> neutral"
+biasCol  = bullGold ? color.lime : bearGold ? color.red : color.gray
+
+// ── Plot ──────────────────────────────────────────────────────────────────
+lineVal = invert ? -realYield : realYield
+plot(lineVal, "Tipo real 10Y", color=biasCol, linewidth=2)
+hline(0, "Real = 0% (territorio muy alcista para el oro)",
+     color=color.new(color.gray, 40), linestyle=hline.style_dashed)
+bgcolor(color.new(biasCol, 90))
+
+// ── Panel resumen (arriba a la derecha) ───────────────────────────────────
+var table t = table.new(position.top_right, 2, 4, border_width=1,
+     frame_color=color.gray, frame_width=1)
+bg = color.new(color.black, 0)
+if showTbl and barstate.islast
+    chgStr = (realChg >= 0 ? "+" : "") + str.tostring(realChg, "0.###")
+    corrBg = corr < -0.3 ? color.new(color.green, 30) : corr > 0.3 ? color.new(color.red, 30) : color.new(color.gray, 30)
+    table.cell(t, 0, 0, "Tipo real 10Y",            text_color=color.white, bgcolor=bg, text_size=size.small)
+    table.cell(t, 1, 0, str.tostring(realYield, "0.###") + " %", text_color=color.white, bgcolor=bg, text_size=size.small)
+    table.cell(t, 0, 1, "Cambio " + str.tostring(chgLen) + "d", text_color=color.white, bgcolor=bg, text_size=size.small)
+    table.cell(t, 1, 1, chgStr,                     text_color=color.white, bgcolor=bg, text_size=size.small)
+    table.cell(t, 0, 2, "Sesgo oro",                text_color=color.white, bgcolor=bg, text_size=size.small)
+    table.cell(t, 1, 2, biasTxt,                    text_color=color.black, bgcolor=biasCol, text_size=size.small)
+    table.cell(t, 0, 3, "Corr " + str.tostring(corrLen) + "d", text_color=color.white, bgcolor=bg, text_size=size.small)
+    table.cell(t, 1, 3, str.tostring(corr, "0.##"), text_color=color.white, bgcolor=corrBg, text_size=size.small)
+
+// ── Alertas ───────────────────────────────────────────────────────────────
+alertcondition(bullGold and not bullGold[1], "Reales bajan -> alcista oro",
+     "Tipos reales 10Y cayendo -> sesgo ALCISTA para el oro")
+alertcondition(bearGold and not bearGold[1], "Reales suben -> bajista oro",
+     "Tipos reales 10Y subiendo -> sesgo BAJISTA para el oro")

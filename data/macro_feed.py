@@ -18,6 +18,7 @@ import pandas as pd
 import logging
 import urllib3
 from datetime import datetime, timezone
+from data.yf_safe import safe_history
 
 # Desactivar verificacion SSL (certificados rotos en Windows — solo uso local)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -47,7 +48,9 @@ SYMBOLS = {
     "spx":   "^GSPC",   # S&P 500
 }
 
-CACHE_MINUTES = 30  # Refrescar cada 30 min — Yahoo Finance tiene rate limit estricto
+CACHE_MINUTES     = 30  # Refrescar cada 30 min — Yahoo Finance tiene rate limit estricto
+FAIL_COOLDOWN_MIN = 5   # Tras un fallo (rate-limit), NO reintentar hasta pasados 5 min
+                        # (antes: refetch cada ciclo de 5s → martilleaba Yahoo y prolongaba el baneo)
 
 
 class MacroFeed:
@@ -57,6 +60,7 @@ class MacroFeed:
         self.corr = correlation_engine
         self._cache: dict = {}
         self._cache_time: datetime | None = None
+        self._last_fetch_ok = False   # última descarga trajo datos (TTL 30m) o no (TTL 5m)
 
     def _get_dxy_series_mt5(self, n_bars: int = 120):
         """Serie H1 del DXY real calculada desde MT5. None si no disponible."""
@@ -73,20 +77,23 @@ class MacroFeed:
     def _cache_valid(self) -> bool:
         if self._cache_time is None:
             return False
-        return (datetime.now(timezone.utc) - self._cache_time).total_seconds() < CACHE_MINUTES * 60
+        # TTL largo si la última descarga fue OK; corto si falló (para reintentar
+        # pronto pero SIN refetch cada ciclo durante un rate-limit de Yahoo).
+        ttl = (CACHE_MINUTES if self._last_fetch_ok else FAIL_COOLDOWN_MIN) * 60
+        return (datetime.now(timezone.utc) - self._cache_time).total_seconds() < ttl
 
     def fetch_all(self, force: bool = False) -> dict:
         """
-        Descarga todos los datos macro. Usa cache de 5 minutos.
+        Descarga todos los datos macro. Cache 30 min (5 min tras un fallo).
         Returns dict con DataFrames OHLCV para cada símbolo.
         """
-        if not force and self._cache_valid() and self._cache:
+        if not force and self._cache_valid():
             return self._cache
 
         data = {}
         for name, ticker in SYMBOLS.items():
             try:
-                df = yf.Ticker(ticker, session=_YF_SESSION).history(period="5d", interval="1h", auto_adjust=True)
+                df = safe_history(ticker, session=_YF_SESSION, period="5d", interval="1h", auto_adjust=True)
                 if not df.empty:
                     df.index = pd.to_datetime(df.index, utc=True)
                     df.columns = [c.lower() for c in df.columns]
@@ -95,9 +102,13 @@ class MacroFeed:
             except Exception as e:
                 logger.warning(f"Error descargando {ticker}: {e}")
 
-        self._cache = data
         self._cache_time = datetime.now(timezone.utc)
-        return data
+        if data:
+            self._cache = data            # descarga OK → TTL 30 min
+            self._last_fetch_ok = True
+        else:
+            self._last_fetch_ok = False   # fallo → conserva caché previa, reintenta en 5 min
+        return self._cache
 
     def get_macro_bias(self) -> dict:
         """
@@ -273,9 +284,8 @@ class MacroFeed:
 
         # ── Fallback: yfinance ^DXY ───────────────────────────────
         try:
-            df = yf.Ticker("^DXY", session=_YF_SESSION).history(
-                period=period, interval=interval, auto_adjust=True
-            )
+            df = safe_history("^DXY", session=_YF_SESSION,
+                              period=period, interval=interval, auto_adjust=True)
             if df.empty:
                 return pd.DataFrame()
             df.index   = pd.to_datetime(df.index, utc=True)
@@ -336,7 +346,7 @@ class MacroFeed:
         results = {}
         for name, ticker in SYMBOLS.items():
             try:
-                df = yf.Ticker(ticker, session=_YF_SESSION).history(period="2d", interval="1h", auto_adjust=True)
+                df = safe_history(ticker, session=_YF_SESSION, period="2d", interval="1h", auto_adjust=True)
                 results[name] = "OK" if not df.empty else "EMPTY"
             except Exception as e:
                 results[name] = f"ERROR: {e}"

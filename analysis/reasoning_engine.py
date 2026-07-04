@@ -25,7 +25,6 @@ def generate_reasoning(signal: dict, macro_data: dict, regime_data: dict) -> str
     Máximo 5-6 líneas concisas.
     """
     direction  = signal.get("direction", "BUY")
-    ob_type    = signal.get("ob_type", "BULLISH")
     bias_h4    = signal.get("bias_h4", "BULLISH")
     rsi_val    = signal.get("rsi_value") or 50.0
     confluences = signal.get("confluences", 0)
@@ -35,8 +34,6 @@ def generate_reasoning(signal: dict, macro_data: dict, regime_data: dict) -> str
 
     dxy_data    = macro_data.get("details", {}).get("dxy", {})
     bonds_data  = macro_data.get("details", {}).get("bonds_10y", {})
-    vix_data    = macro_data.get("details", {}).get("vix", {})
-    gold_bias   = macro_data.get("gold_bias", "NEUTRAL")
 
     regime      = regime_data.get("regime", "UNKNOWN")
     adx         = regime_data.get("adx", 20.0)
@@ -48,11 +45,10 @@ def generate_reasoning(signal: dict, macro_data: dict, regime_data: dict) -> str
     lines = []
 
     # ── Línea 1: Estructura principal ────────────────────────────
-    dir_es = "alcista" if direction == "BUY" else "bajista"
     ob_es  = "soporte" if direction == "BUY" else "resistencia"
     lines.append(
         f"📍 <b>Estructura H4 {bias_h4}</b> con Order Block como {ob_es} "
-        f"institucional — {confluences}/14.5 confluencias."
+        f"institucional — {confluences}/16.5 confluencias."
     )
 
     # ── Línea 2: RSI / momentum ───────────────────────────────────
