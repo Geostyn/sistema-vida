@@ -2,34 +2,60 @@
 # Motivo: el bot murio 2 veces en 3 dias (apagon del PC 03-07, ventana
 # cerrada 04-07) y cada caida son horas sin senales ni gestion de trades.
 #
-# Registrado en el Programador de tareas de Windows como "TradingBotWatchdog"
-# (cada 10 min, usuario logueado). Ver/borrar:
-#   schtasks /Query /TN TradingBotWatchdog
-#   schtasks /Delete /TN TradingBotWatchdog /F
+# MODO DE EJECUCION (2026-07-05): bucle persistente lanzado al iniciar sesion
+# por el acceso de la carpeta de Inicio:
+#   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\trading-watchdog.bat
+# Corre minimizado con titulo TRADING-WATCHDOG (visible en la barra de tareas;
+# cerrarlo a proposito = apagar el watchdog hasta el proximo inicio de sesion).
 #
-# OJO (2026-07-05): NO recrear con `schtasks /Create /TR "...\""` — el escapado
-# de comillas corrompe la ruta (-File " C:\...\watchdog.ps1\) y la tarea queda
-# rota/deshabilitada. Recrear SIEMPRE con PowerShell nativo:
-#   $a = New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Users\geost\Desktop\trading-system\watchdog.ps1"'
-#   $t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration (New-TimeSpan -Days 3650)
-#   $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-#   Register-ScheduledTask -TaskName TradingBotWatchdog -Action $a -Trigger $t -Settings $s
-#   Enable-ScheduledTask -TaskName TradingBotWatchdog   # a veces registra Disabled
+#   powershell -NoProfile -ExecutionPolicy Bypass -File watchdog.ps1 -Loop
+#   (sin -Loop hace UNA comprobacion y sale — util para probar a mano)
+#
+# HISTORIA: la v1 usaba una tarea programada (TradingBotWatchdog) pero algo en
+# este Windows la DESHABILITABA tras cada disparo (sin deteccion de Defender;
+# probado 3x el 2026-07-05, incluso registrada nativa con Register-ScheduledTask
+# — disparaba OK, resultado 0, y ~25 s despues aparecia Disabled). Se abandono
+# Task Scheduler por el bucle persistente. NO volver a schtasks sin resolver eso.
 #
 # PAUSA (apagado manual intencionado): si existe logs\watchdog.pause NO
 # relanza. DETENER.bat crea el flag; INICIAR.bat lo borra.
+
+param(
+    [switch]$Loop,
+    [int]$IntervalSec = 600
+)
 
 $base = 'C:\Users\geost\Desktop\trading-system'
 $py   = 'C:\Users\geost\AppData\Local\Python\pythoncore-3.14-64\python.exe'
 $log  = Join-Path $base 'logs\watchdog.log'
 
-if (Test-Path (Join-Path $base 'logs\watchdog.pause')) { exit 0 }
+function Invoke-WatchdogCheck {
+    if (Test-Path (Join-Path $base 'logs\watchdog.pause')) { return }
 
-# El bot vivo = python.exe DE PRODUCCION cuyo CommandLine contiene main.py
-# (mismo criterio que el reinicio quirurgico de PLAN-FABLE.md)
-$running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.CommandLine -match '\bmain\.py' -and $_.ExecutablePath -eq $py }
-if ($running) { exit 0 }
+    # El bot vivo = python.exe DE PRODUCCION cuyo CommandLine contiene main.py
+    # (mismo criterio que el reinicio quirurgico de PLAN-FABLE.md)
+    $running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+        Where-Object { $_.CommandLine -match '\bmain\.py' -and $_.ExecutablePath -eq $py }
+    if ($running) { return }
 
-Add-Content $log ("{0}  main.py caido - relanzando via watchdog" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-Start-Process cmd -WorkingDirectory $base -WindowStyle Minimized -ArgumentList '/k', "title TRADING-BOT & set PYTHONIOENCODING=utf-8 & `"$py`" main.py"
+    Add-Content $log ("{0}  main.py caido - relanzando via watchdog" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    Start-Process cmd -WorkingDirectory $base -WindowStyle Minimized -ArgumentList '/k', "title TRADING-BOT & set PYTHONIOENCODING=utf-8 & `"$py`" main.py"
+}
+
+if ($Loop) {
+    # Idempotente: si ya hay otro watchdog en bucle, salir sin duplicar
+    # (permite llamarlo desde INICIAR.bat y el arranque sin riesgo de carrera)
+    $others = Get-Process powershell -ErrorAction SilentlyContinue |
+        Where-Object { $_.Id -ne $PID -and $_.MainWindowTitle -eq 'TRADING-WATCHDOG' }
+    if ($others) { exit 0 }
+    $host.UI.RawUI.WindowTitle = 'TRADING-WATCHDOG'
+    Add-Content $log ("{0}  watchdog en bucle iniciado (cada {1}s)" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $IntervalSec)
+    while ($true) {
+        try { Invoke-WatchdogCheck } catch {
+            Add-Content $log ("{0}  error: {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $_.Exception.Message)
+        }
+        Start-Sleep -Seconds $IntervalSec
+    }
+} else {
+    Invoke-WatchdogCheck
+}

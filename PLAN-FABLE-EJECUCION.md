@@ -122,22 +122,24 @@ Aceptación: 0 filas en 48 h de mercado abierto. También revisar `sent_signals`
 2. Revisar el primer informe `/ml_check` en Telegram (llegará cada sábado).
 
 ### Mejoras operativas añadidas (2026-07-04 ~23:45)
-- **WATCHDOG del bot** (`watchdog.ps1` + tarea Windows `TradingBotWatchdog`, cada
-  10 min): si `main.py` (python de producción) no corre, lo relanza minimizado y
-  lo apunta en `logs/watchdog.log`. **Probado end-to-end** (matado el bot → el
-  watchdog lo revivió en <10 s). Apagado intencionado: `DETENER.bat` crea
-  `logs/watchdog.pause` (el watchdog NO relanza); `INICIAR.bat` la borra.
-  Gestión: `schtasks /Query /TN TradingBotWatchdog` · `/Delete ... /F` para quitar.
-  ⚠️ **Fix 2026-07-05:** la tarea creada con `schtasks /Create` quedó ROTA
-  (escapado de comillas corrompió la ruta del .ps1 → fallo -196608). Recreada con
-  `Register-ScheduledTask` nativo (+ StartWhenAvailable, AllowStartIfOnBatteries,
-  límite 5 min). Receta completa en el header de `watchdog.ps1`.
-  Disparo programado verificado OK (00:17:54, resultado 0), PERO la tarea se
-  **auto-deshabilitó 2 veces** (sin detección Defender; log TaskScheduler apagado).
-  Re-habilitada + vigilancia 25 min en curso. **SI VUELVE A DESHABILITARSE:**
-  plan B = watcher persistente en shell:startup (bucle PowerShell cada 10 min),
-  sin Task Scheduler. Comprobar en la próxima sesión:
-  `(Get-ScheduledTask -TaskName TradingBotWatchdog).State` debe ser Ready.
+- **WATCHDOG del bot — ARQUITECTURA FINAL (2026-07-05): bucle persistente, SIN
+  Task Scheduler.** `watchdog.ps1 -Loop` (comprobación cada 600 s): si `main.py`
+  (python de producción) no corre, lo relanza minimizado y lo apunta en
+  `logs/watchdog.log`. Corre como ventana minimizada **TRADING-WATCHDOG**,
+  lanzada en cada inicio de sesión por
+  `%APPDATA%\...\Startup\trading-watchdog.bat` y también desde `INICIAR.bat`
+  (arranque idempotente: si ya hay un watcher, el nuevo sale solo).
+  Apagado intencionado: `DETENER.bat` crea `logs/watchdog.pause` (no relanza);
+  `INICIAR.bat` la borra. Cerrar la ventana TRADING-WATCHDOG = watchdog off
+  hasta el próximo logon/INICIAR.
+  **Probado end-to-end 2×:** bot matado → revivido por el watcher en <15 s;
+  idempotencia verificada (relanzar el .bat no duplica).
+  ⚠️ **Por qué NO Task Scheduler:** se probó 3× (schtasks y Register-ScheduledTask
+  nativo) — la tarea disparaba OK (resultado 0) pero algo de este Windows la
+  **auto-deshabilitaba ~25 s después de cada disparo** (sin detección Defender;
+  log TaskScheduler apagado). Historia completa en el header de `watchdog.ps1`.
+  La tarea `TradingBotWatchdog` fue ELIMINADA. Pendiente trivial: verificar tras
+  el próximo reinicio del PC que la ventana TRADING-WATCHDOG aparece sola.
 - **Ablación de confluencias** (`backtest/confluence_report.py` NUEVO, read-only,
   sobre los trades ejecutados de los runs cand IS+OOS, n≈70/ventana):
   - `m15_aligned` **AYUDA en ambas** (+21% / +6% WR) · `rsi_extremo` **AYUDA en
