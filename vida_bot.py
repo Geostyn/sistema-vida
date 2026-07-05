@@ -378,6 +378,49 @@ def broadcast_to_group(text: str):
         send_message(text, chat_id=GROUP_CHAT_ID)
 
 
+def send_message_return_id(text: str, reply_markup: dict = None, chat_id: str = None):
+    """Como send_message pero devuelve el message_id (para luego editar/quitar botones).
+    reply_markup es un dict de Telegram (p.ej. inline_keyboard)."""
+    target = chat_id or CHAT_ID
+    payload = {"chat_id": target, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        resp = requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json=payload, timeout=30, verify=SSL_VERIFY,
+        )
+        return resp.json().get("result", {}).get("message_id")
+    except Exception as e:
+        logger.error(f"Error enviando mensaje con botones: {e}")
+        return None
+
+
+def answer_callback_query(callback_id: str, text: str = ""):
+    """Cierra el spinner del botón inline (ack)."""
+    try:
+        requests.post(
+            f"{TELEGRAM_API}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": text},
+            timeout=10, verify=SSL_VERIFY,
+        )
+    except Exception as e:
+        logger.error(f"answerCallbackQuery: {e}")
+
+
+def edit_message(chat_id: str, message_id: int, text: str):
+    """Edita el texto de un mensaje y, al no mandar reply_markup, le quita los botones."""
+    try:
+        requests.post(
+            f"{TELEGRAM_API}/editMessageText",
+            json={"chat_id": chat_id, "message_id": message_id,
+                  "text": text, "parse_mode": "HTML"},
+            timeout=15, verify=SSL_VERIFY,
+        )
+    except Exception as e:
+        logger.error(f"editMessageText: {e}")
+
+
 def get_updates() -> list:
     global last_update_id
     try:
@@ -1679,6 +1722,231 @@ def process_group_expense(msg: dict):
             )
 
 
+# ── Foto de comida (chat personal) → macros con Groq Vision ──────────
+# Estado en memoria: la estimación pendiente de confirmar por sus botones.
+_pending_food = {}         # {message_id_estimacion: dict_estimacion}
+_pending_correction = {}   # {chat_id: dict_estimacion_original}
+_processed_cb_ids = set()  # dedup de callbacks
+
+
+def _hora_local() -> int:
+    """Hora local de Bélgica (Render corre en UTC). Para detectar la franja de comida."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Brussels")).hour
+    except Exception:
+        from datetime import timezone, timedelta
+        return datetime.now(timezone(timedelta(hours=2))).hour  # fallback CEST
+
+
+def _franja_comida() -> str:
+    """Devuelve desayuno/comida/cena/snacks según la hora local."""
+    h = _hora_local()
+    if 5 <= h < 11:
+        return "desayuno"
+    if 11 <= h < 16:
+        return "comida"
+    if 16 <= h < 18:
+        return "snacks"
+    if 18 <= h < 23:
+        return "cena"
+    return "snacks"
+
+
+def _safe_int(v, default: int = 0) -> int:
+    try:
+        import re as _re
+        m = _re.search(r'-?\d+(?:[.,]\d+)?', str(v))
+        return int(round(float(m.group(0).replace(",", ".")))) if m else default
+    except (ValueError, TypeError):
+        return default
+
+
+def analyze_food(img_url: str = None, texto: str = "") -> dict:
+    """Estima la nutrición de un plato con Groq Vision (foto) o solo texto (corrección).
+    Devuelve dict normalizado: plato, ingredientes[], porcion_g, kcal, prot_g, carbs_g, grasas_g, confianza."""
+    import json
+    import re
+    from groq import Groq
+    client = Groq(api_key=GROQ_API_KEY)
+
+    nota = f'\nNota del usuario (úsala; si da gramos/cantidades, MANDAN sobre lo que se ve): "{texto}"' if texto else ""
+    instru = (
+        "Eres un nutricionista deportivo. Estima la nutrición de esta comida.\n"
+        f"{nota}\n"
+        "Responde SOLO con un objeto JSON (sin markdown, sin ```), con estas claves EXACTAS:\n"
+        '{"plato": "nombre corto en español", '
+        '"ingredientes": ["ingredientes principales en español"], '
+        '"porcion_estimada_g": <entero gramos totales del plato>, '
+        '"kcal": <entero>, "prot_g": <entero>, "carbs_g": <entero>, "grasas_g": <entero>, '
+        '"confianza": "alta|media|baja"}\n'
+        "Estima raciones realistas por las pistas visuales (tamaño del plato, cubiertos). "
+        "Si solo tienes texto, estima por lo descrito. Sé realista, no infles las cantidades."
+    )
+    content = []
+    if img_url:
+        content.append({"type": "image_url", "image_url": {"url": img_url}})
+    content.append({"type": "text", "text": instru})
+
+    chat = client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{"role": "user", "content": content}],
+        max_tokens=400, temperature=0.1,
+    )
+    raw = chat.choices[0].message.content.strip()
+    logger.info(f"Vision comida: {raw[:200]!r}")
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    data = json.loads(m.group(0)) if m else {}
+
+    ingredientes = data.get("ingredientes") or []
+    if isinstance(ingredientes, str):
+        ingredientes = [ingredientes]
+    return {
+        "plato": str(data.get("plato") or "Comida").strip()[:80],
+        "ingredientes": [str(x).strip() for x in ingredientes][:8],
+        "porcion_g": _safe_int(data.get("porcion_estimada_g")),
+        "kcal": _safe_int(data.get("kcal")),
+        "prot_g": _safe_int(data.get("prot_g")),
+        "carbs_g": _safe_int(data.get("carbs_g")),
+        "grasas_g": _safe_int(data.get("grasas_g")),
+        "confianza": str(data.get("confianza") or "media").lower(),
+    }
+
+
+def _present_food_estimate(est: dict):
+    """Muestra la estimación con botones ✅ Guardar / ✏️ Corregir / ❌ Descartar."""
+    ing = ", ".join(est["ingredientes"][:6])
+    conf_emoji = {"alta": "🟢", "media": "🟡", "baja": "🔴"}.get(est["confianza"], "🟡")
+    porcion = f"⚖️ Porción estimada: ~{est['porcion_g']} g\n" if est["porcion_g"] else ""
+    txt = (
+        f"🍽️ <b>{est['plato']}</b>  {conf_emoji}\n"
+        + (f"<i>{ing}</i>\n" if ing else "")
+        + porcion
+        + "\n"
+        f"🔥 <b>{est['kcal']}</b> kcal\n"
+        f"💪 {est['prot_g']} g proteína · 🌾 {est['carbs_g']} g carbos · 🥑 {est['grasas_g']} g grasas\n\n"
+        f"¿Lo guardo en tu registro de hoy?"
+    )
+    kb = {"inline_keyboard": [[
+        {"text": "✅ Guardar", "callback_data": "food_save"},
+        {"text": "✏️ Corregir", "callback_data": "food_fix"},
+        {"text": "❌ Descartar", "callback_data": "food_del"},
+    ]]}
+    mid = send_message_return_id(txt, reply_markup=kb)
+    if mid:
+        _pending_food[mid] = est
+        if len(_pending_food) > 50:  # acotar memoria
+            for k in list(_pending_food)[:-25]:
+                _pending_food.pop(k, None)
+
+
+def _save_food(est: dict) -> bool:
+    """Guarda la estimación en alimentacion (franja por hora) + XP + barra de progreso."""
+    franja = _franja_comida()
+    desc = est["plato"]
+    if est.get("ingredientes"):
+        desc = f"{est['plato']} ({', '.join(est['ingredientes'][:5])})"
+    campos = {"desayuno": "", "comida": "", "cena": "", "snacks": ""}
+    campos[franja] = desc
+
+    ok = True
+    if IS_CLOUD:
+        import supabase_client as sb
+        ok = sb.insert_alimentacion(
+            campos["desayuno"], campos["comida"], campos["cena"], campos["snacks"],
+            est["kcal"], est["prot_g"], est["carbs_g"], est["grasas_g"], "", "😊",
+        )
+    if not ok:
+        send_message("⚠️ No pude guardar en la base de datos. Inténtalo de nuevo.")
+        return False
+
+    # XP (mismo criterio que el registro por texto)
+    xp_msgs = []
+    xp_state = load_state()
+    result = award_xp("alimentacion_registrada", xp_state)
+    xp_state = result["state"]
+    xp_msgs.extend(result["messages"])
+    if est["prot_g"] >= 140:
+        r2 = award_xp("proteina_objetivo", xp_state)
+        xp_state = r2["state"]
+        xp_msgs.extend(r2["messages"])
+        update_streak("proteina", True, xp_state)
+    save_state(xp_state)
+
+    franja_lbl = {"desayuno": "🌅 Desayuno", "comida": "☀️ Comida",
+                  "cena": "🌙 Cena", "snacks": "🍎 Snack"}[franja]
+    perfil = load_perfil()
+    prog = _macro_progress_msg(perfil)
+    extra = ("\n\n" + "\n".join(xp_msgs)) if xp_msgs else ""
+    send_message(f"✅ <b>Guardado como {franja_lbl}</b> — {est['plato']}{prog}{extra}")
+    return True
+
+
+def handle_food_photo(msg: dict):
+    """Rama del chat personal: una foto (con caption opcional) → estimación de macros."""
+    _pending_correction.pop(CHAT_ID, None)  # una foto nueva cancela una corrección a medias
+    caption = (msg.get("caption") or "").strip()
+    send_message("🍽️ Analizando tu comida...")
+    try:
+        photos = msg.get("photo", [])
+        file_id = photos[-1]["file_id"] if photos else msg["document"]["file_id"]
+        img_url = get_telegram_image_url(file_id)
+        est = analyze_food(img_url=img_url, texto=caption)
+    except Exception as e:
+        logger.error(f"Error analizando foto de comida: {e}", exc_info=True)
+        send_message(
+            "❌ No pude analizar la foto. Prueba con más luz o dímelo por texto "
+            "(ej: <code>300g arroz con pollo</code>)."
+        )
+        return
+    _present_food_estimate(est)
+
+
+def handle_food_correction(text: str):
+    """El usuario respondió con la corrección tras pulsar ✏️ Corregir → recalcula y re-presenta."""
+    orig = _pending_correction.pop(CHAT_ID, None)
+    send_message("🔄 Recalculando con tu corrección...")
+    contexto = f"Plato detectado antes: {orig['plato']}. " if orig else ""
+    try:
+        est = analyze_food(img_url=None, texto=contexto + "Corrección/descripción del usuario: " + text)
+    except Exception as e:
+        logger.error(f"Error en corrección de comida: {e}", exc_info=True)
+        send_message("❌ No pude recalcular. Reenvía la foto o descríbelo de nuevo.")
+        return
+    _present_food_estimate(est)
+
+
+def handle_food_callback(cb: dict):
+    """Procesa los botones ✅/✏️/❌ de la estimación de comida."""
+    data = cb.get("data", "")
+    message = cb.get("message", {})
+    mid = message.get("message_id")
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    est = _pending_food.pop(mid, None)
+
+    if data == "food_del":
+        edit_message(chat_id, mid, "❌ <i>Comida descartada.</i>")
+        return
+    if data == "food_fix":
+        if est:
+            _pending_correction[chat_id] = est
+        edit_message(
+            chat_id, mid,
+            "✏️ Vale. Escríbeme la corrección (ej: <code>eran 300g de arroz y 200g de pollo</code>) "
+            "y la recalculo.",
+        )
+        return
+    if data == "food_save":
+        if not est:
+            edit_message(chat_id, mid, "⚠️ Esta estimación ya expiró. Reenvía la foto, porfa.")
+            return
+        edit_message(
+            chat_id, mid,
+            f"✅ <b>{est['plato']}</b> guardado · {est['kcal']} kcal · {est['prot_g']}g prot",
+        )
+        _save_food(est)
+
+
 def _send_family_monthly_summary(chat_id: str):
     """Envía resumen mensual de gastos familiares al grupo."""
     if not IS_CLOUD:
@@ -2471,6 +2739,26 @@ def _make_flask_app():
     @flask_app.route("/webhook", methods=["POST"])
     def webhook():
         data   = request.get_json(force=True, silent=True) or {}
+
+        # Callback de botones inline (foto de comida: ✅/✏️/❌) — solo chat personal
+        cb = data.get("callback_query")
+        if cb:
+            cb_id = cb.get("id")
+            if cb_id and cb_id in _processed_cb_ids:
+                return jsonify({"ok": True})
+            if cb_id:
+                _processed_cb_ids.add(cb_id)
+                if len(_processed_cb_ids) > 500:
+                    _processed_cb_ids.clear()
+            cb_chat = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+
+            def _cb():
+                answer_callback_query(cb_id)  # cierra el spinner del botón
+                if cb_chat == CHAT_ID:
+                    handle_food_callback(cb)
+            threading.Thread(target=_cb, daemon=True).start()
+            return jsonify({"ok": True})
+
         msg    = data.get("message", {})
         msg_id = msg.get("message_id")
 
@@ -2496,6 +2784,11 @@ def _make_flask_app():
 
         # Procesar TODO en background para devolver 200 inmediatamente
         def handle():
+            # Foto de comida en el chat personal → macros automáticos
+            if msg.get("photo") or (msg.get("document") and
+                                    str(msg["document"].get("mime_type", "")).startswith("image/")):
+                handle_food_photo(msg)
+                return
             text = msg.get("text", "").strip()
             if not text and msg.get("voice"):
                 send_message("🎤 Transcribiendo tu audio...")
@@ -2504,6 +2797,10 @@ def _make_flask_app():
                     send_message("❌ No pude transcribir el audio. Intenta enviarlo como texto.")
                     return
             if text:
+                # Si venía de pulsar ✏️ Corregir, este texto es la corrección
+                if _pending_correction.get(CHAT_ID):
+                    handle_food_correction(text)
+                    return
                 process_message(text)
 
         threading.Thread(target=handle, daemon=True).start()
@@ -2644,14 +2941,27 @@ def main():
                 while True:
                     try:
                         for update in get_updates():
+                            cb = update.get("callback_query")
+                            if cb:
+                                if str(cb.get("message", {}).get("chat", {}).get("id", "")) == CHAT_ID:
+                                    answer_callback_query(cb.get("id"))
+                                    handle_food_callback(cb)
+                                continue
                             msg = update.get("message", {})
                             incoming = str(msg.get("chat", {}).get("id", ""))
                             if GRUPO_FAMILIA_CHAT_ID and incoming == GRUPO_FAMILIA_CHAT_ID:
                                 process_group_expense(msg)
                             elif incoming == CHAT_ID:
+                                if msg.get("photo") or (msg.get("document") and
+                                        str(msg["document"].get("mime_type", "")).startswith("image/")):
+                                    handle_food_photo(msg)
+                                    continue
                                 text = msg.get("text", "").strip()
                                 if text:
-                                    process_message(text)
+                                    if _pending_correction.get(CHAT_ID):
+                                        handle_food_correction(text)
+                                    else:
+                                        process_message(text)
                         schedule.run_pending()
                         time.sleep(2)
                     except Exception as e:
