@@ -506,7 +506,10 @@ def get_top_items_mes(n: int = 10) -> list:
 def get_temas_recientes(n: int = 30) -> list:
     """Devuelve los últimos N títulos enviados para evitar repetición."""
     try:
-        r = get_client().table("datos_enviados").select("titulo").order("enviado_at", desc=True).limit(n).execute()
+        # Las marcas de los avisos de agenda (categoria='agenda') no son temas.
+        r = get_client().table("datos_enviados").select("titulo") \
+            .or_("categoria.is.null,categoria.neq.agenda") \
+            .order("enviado_at", desc=True).limit(n).execute()
         return [row["titulo"] for row in (r.data or [])]
     except Exception as e:
         logger.error(f"Supabase get_temas_recientes: {e}")
@@ -779,3 +782,136 @@ def insert_sueno_registro(hora_dormir, hora_despertar, horas, ciclos,
     except Exception as e:
         logger.error(f"Supabase insert_sueno_registro: {e}")
         return False
+
+
+# ── Agenda (tabla agenda_eventos, la misma que pinta la PWA) ──
+
+_AGENDA_TIPOS = ("entreno", "descanso", "personal", "trabajo", "salud", "finanzas", "otro")
+_AGENDA_ESTADOS = ("planificado", "hecho", "saltado", "movido")
+
+
+def _agenda_fecha(v) -> str:
+    """Fecha ISO válida o ''."""
+    try:
+        return date.fromisoformat(str(v or "")[:10]).isoformat()
+    except ValueError:
+        return ""
+
+
+def _agenda_hora(v):
+    """'HH:MM' válida o None (evento de todo el día)."""
+    s = str(v or "").strip()[:5]
+    ok = len(s) == 5 and s[2] == ":" and s[:2].isdigit() and s[3:].isdigit() \
+        and int(s[:2]) < 24 and int(s[3:]) < 60
+    return s if ok else None
+
+
+def _agenda_fila(e: dict) -> dict:
+    """Fila completa y saneada para insertar (sin user_id: lo pone agenda_insertar)."""
+    return {
+        "fecha": _agenda_fecha(e.get("fecha")),
+        "hora": _agenda_hora(e.get("hora")),
+        "titulo": str(e.get("titulo") or "").strip()[:200] or None,
+        "tipo": e.get("tipo") if e.get("tipo") in _AGENDA_TIPOS else "otro",
+        "estado": e.get("estado") if e.get("estado") in _AGENDA_ESTADOS else "planificado",
+        "notas": str(e.get("notas") or "").strip()[:1000] or None,
+        "color": str(e.get("color") or "").strip()[:20] or None,
+    }
+
+
+_agenda_dueno_id = None
+
+
+def agenda_dueno():
+    """user_id del dueño: el de la fila 1 de perfil_usuario, que el script
+    multiusuario dejó a su nombre. Con la service_role no hay RLS, así que los
+    eventos de otra persona registrada en la PWA se filtran con esto.
+    None si no se pudo averiguar (y entonces la agenda no hace nada)."""
+    global _agenda_dueno_id
+    if _agenda_dueno_id is None:
+        try:
+            r = get_client().table("perfil_usuario").select("user_id").eq("id", 1).limit(1).execute()
+            _agenda_dueno_id = (r.data or [{}])[0].get("user_id") or None
+        except Exception as e:
+            logger.error(f"Supabase agenda_dueno: {e}")
+    return _agenda_dueno_id
+
+
+def agenda_listar(desde: str, hasta: str = None) -> list:
+    """Eventos del dueño entre dos fechas ISO (ambas incluidas)."""
+    desde = _agenda_fecha(desde)
+    hasta = _agenda_fecha(hasta) or desde
+    dueno = agenda_dueno()
+    if not desde or not dueno:
+        return []
+    try:
+        r = get_client().table("agenda_eventos").select("*").eq("user_id", dueno) \
+            .gte("fecha", desde).lte("fecha", hasta) \
+            .order("fecha", desc=False).limit(500).execute()
+        return r.data or []
+    except Exception as e:
+        logger.error(f"Supabase agenda_listar: {e}")
+        return []
+
+
+def agenda_insertar(eventos: list) -> list:
+    """Inserta eventos en la agenda. Devuelve las filas creadas (con su id)."""
+    if not isinstance(eventos, list):
+        return []
+    dueno = agenda_dueno()
+    filas = [dict(f, user_id=dueno) for f in (_agenda_fila(e) for e in eventos[:200]
+                                              if isinstance(e, dict)) if f["fecha"]]
+    if not filas or not dueno:
+        return []
+    try:
+        r = get_client().table("agenda_eventos").insert(filas).execute()
+        return r.data or []
+    except Exception as e:
+        logger.error(f"Supabase agenda_insertar: {e}")
+        return []
+
+
+def agenda_actualizar(evento_id, cambios: dict) -> bool:
+    """Cambia campos de un evento (los mismos que acepta agenda_insertar)."""
+    cambios = cambios if isinstance(cambios, dict) else {}
+    limpio = _agenda_fila(cambios)
+    datos = {k: limpio[k] for k in limpio if k in cambios}
+    dueno = agenda_dueno()
+    if not datos or ("fecha" in datos and not datos["fecha"]) or not dueno:
+        return False
+    try:
+        r = get_client().table("agenda_eventos").update(datos) \
+            .eq("id", int(evento_id)).eq("user_id", dueno).execute()
+        return bool(r.data)
+    except Exception as e:
+        logger.error(f"Supabase agenda_actualizar: {e}")
+        return False
+
+
+def agenda_borrar(ids: list) -> int:
+    """Borra eventos por id. Devuelve cuántos se borraron."""
+    try:
+        if not isinstance(ids, list):
+            return 0
+        ids = [int(i) for i in ids[:200]]
+        dueno = agenda_dueno()
+        if not ids or not dueno:
+            return 0
+        r = get_client().table("agenda_eventos").delete() \
+            .in_("id", ids).eq("user_id", dueno).execute()
+        return len(r.data or [])
+    except Exception as e:
+        logger.error(f"Supabase agenda_borrar: {e}")
+        return 0
+
+
+def aviso_agenda_enviado(clave: str):
+    """True/False si el aviso de agenda `clave` ya se mandó; None si no se pudo
+    comprobar. La marca vive en datos_enviados con categoria='agenda'."""
+    try:
+        r = get_client().table("datos_enviados").select("id") \
+            .eq("categoria", "agenda").eq("titulo", clave).limit(1).execute()
+        return bool(r.data)
+    except Exception as e:
+        logger.error(f"Supabase aviso_agenda_enviado: {e}")
+        return None

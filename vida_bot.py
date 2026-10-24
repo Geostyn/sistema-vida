@@ -89,6 +89,8 @@ CREATINE_TIME   = os.environ.get("CREATINE_TIME")   or cfg.get("vida_bot", {}).g
 DATO_MAÑANA     = os.environ.get("DATO_MAÑANA")     or cfg.get("vida_bot", {}).get("dato_manana", "08:30")
 DATO_TARDE      = os.environ.get("DATO_TARDE")      or cfg.get("vida_bot", {}).get("dato_tarde",  "14:00")
 DATO_NOCHE      = os.environ.get("DATO_NOCHE")      or cfg.get("vida_bot", {}).get("dato_noche",  "20:00")
+AGENDA_HOY_TIME    = os.environ.get("AGENDA_HOY_TIME")    or cfg.get("vida_bot", {}).get("agenda_hoy",    "07:40")
+AGENDA_MANANA_TIME = os.environ.get("AGENDA_MANANA_TIME") or cfg.get("vida_bot", {}).get("agenda_manana", "19:30")
 
 # Cloud mode: activo cuando Supabase está configurado (Fly.io)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -2671,6 +2673,108 @@ def _verificar_jwt(req) -> bool:
         return False
 
 
+# ── Avisos de la agenda (agenda_eventos → Telegram) ───────────
+# Dos avisos al día con lo que hay en la agenda de la PWA: el de hoy a primera
+# hora y el de mañana por la tarde. Los entrenos y descansos no entran: esos
+# los lleva la agenda de entreno.
+_AGENDA_TZ = "Europe/Madrid"
+_AGENDA_FIN = {"hoy": "12:00", "manana": "23:30"}   # fin de la ventana de cada aviso
+_AGENDA_SIN_AVISO = ("entreno", "descanso")
+_AGENDA_DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+_AGENDA_MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+                 "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+_agenda_avisados = set()   # claves 'agenda-hoy 2026-10-13' ya enviadas en este proceso
+
+
+def _agenda_ahora() -> datetime:
+    """Hora local de España, sin depender de la variable TZ del servidor."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(_AGENDA_TZ)).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
+def _agenda_texto(cuando: str, fecha, eventos: list) -> str:
+    """Mensaje del aviso ('hoy' o 'manana') con los eventos pendientes de `fecha`.
+    Devuelve '' si no hay ninguno."""
+    import html
+    pend = [e for e in eventos
+            if e.get("tipo") not in _AGENDA_SIN_AVISO
+            and e.get("estado") not in ("hecho", "saltado")]
+    if not pend:
+        return ""
+    pend.sort(key=lambda e: (not e.get("hora"), str(e.get("hora") or ""), e.get("id") or 0))
+    dia = f"{_AGENDA_DIAS[fecha.weekday()]} {fecha.day} de {_AGENDA_MESES[fecha.month - 1]}"
+    lineas = [f"📋 <b>Hoy, {dia}</b>" if cuando == "hoy" else f"🔔 <b>Mañana, {dia}</b>", ""]
+    cola = ["", "<i>¿Ya está hecho? Bórralo de la agenda de la app.</i>"]
+    for i, e in enumerate(pend):
+        # Se recorta el texto crudo, nunca el HTML: así no quedan etiquetas a medias
+        hora = str(e.get("hora") or "")[:5]
+        titulo = html.escape(str(e.get("titulo") or "Evento")[:200])
+        bloque = [f"• <b>{hora + ' · ' if hora else ''}{titulo}</b>"]
+        notas = str(e.get("notas") or "").strip()
+        if notas:
+            bloque.append("  " + html.escape(notas[:300] + ("…" if len(notas) > 300 else "")))
+        if len("\n".join(lineas + bloque + cola)) > 3900:   # Telegram corta a 4096
+            lineas.append(f"… y {len(pend) - i} más en la agenda de la app.")
+            break
+        lineas += bloque
+    return "\n".join(lineas + cola)
+
+
+def _agenda_resumen(cuando: str, fecha=None) -> str:
+    """Texto del aviso de hoy o de mañana (o de `fecha`, si se indica)."""
+    from datetime import timedelta
+    from supabase_client import agenda_listar
+    if fecha is None:
+        fecha = _agenda_ahora().date() + timedelta(days=1 if cuando == "manana" else 0)
+    return _agenda_texto(cuando, fecha, agenda_listar(fecha.isoformat()))
+
+
+def check_agenda_avisos():
+    """Cada 5 min: manda el aviso de hoy y el de mañana, una vez al día cada uno,
+    dentro de su ventana horaria. La marca de enviado se guarda en Supabase para
+    no repetir tras un reinicio; si un día no hay nada, no se manda nada."""
+    if not IS_CLOUD:
+        return
+    try:
+        from supabase_client import aviso_agenda_enviado, insert_dato_enviado
+        ahora = _agenda_ahora()
+        hhmm = ahora.strftime("%H:%M")
+        for cuando, inicio in (("hoy", AGENDA_HOY_TIME), ("manana", AGENDA_MANANA_TIME)):
+            if not (str(inicio).zfill(5) <= hhmm < _AGENDA_FIN[cuando]):
+                continue
+            clave = f"agenda-{cuando} {ahora.date().isoformat()}"
+            if clave in _agenda_avisados:
+                continue
+            ya = aviso_agenda_enviado(clave)
+            if ya is None:          # no se pudo comprobar: se reintenta en el siguiente ciclo
+                continue
+            if ya:
+                _agenda_avisados.add(clave)
+                continue
+            texto = _agenda_resumen(cuando)
+            if texto and send_message(texto):
+                _agenda_avisados.add(clave)
+                insert_dato_enviado(clave, "agenda", cuando)
+    except Exception as e:
+        logger.error(f"check_agenda_avisos: {e}")
+
+
+def _agenda_admin_ok(req) -> bool:
+    """Acceso de mantenimiento a la agenda: la cabecera X-Agenda-Key debe ser
+    HMAC-SHA256(BOT_TOKEN, 'agenda-admin'). Solo quien tiene el token del bot
+    puede calcularla; no hace falta ninguna variable de entorno nueva."""
+    import hmac
+    import hashlib
+    if not BOT_TOKEN:
+        return False
+    esperado = hmac.new(BOT_TOKEN.encode(), b"agenda-admin", hashlib.sha256).hexdigest()
+    recibido = req.headers.get("X-Agenda-Key", "")
+    return hmac.compare_digest(recibido.encode("utf-8", "ignore"), esperado.encode())
+
+
 def _make_flask_app():
     import threading
     from flask import Flask, request, jsonify
@@ -2735,6 +2839,49 @@ def _make_flask_app():
         except Exception as e:
             logger.error(f"api_mejoras: {e}")
             return jsonify({"error": "error generando mejora"}), 500
+
+    @flask_app.route("/api/agenda-admin", methods=["POST"])
+    def api_agenda_admin():
+        """Mantenimiento de la agenda (alta, cambio y baja de eventos, y prueba
+        de los avisos). Autenticado con _agenda_admin_ok, no con el JWT de la PWA."""
+        if not _agenda_admin_ok(request):
+            return jsonify({"error": "no autorizado"}), 401
+        if not IS_CLOUD:
+            return jsonify({"error": "solo en modo cloud"}), 400
+        if (request.content_length or 0) > 64_000:
+            return jsonify({"error": "petición demasiado grande"}), 413
+        data = request.get_json(force=True, silent=True)
+        data = data if isinstance(data, dict) else {}
+        accion = data.get("accion")
+        try:
+            import supabase_client as sb
+            if accion == "listar":
+                return jsonify({"eventos": sb.agenda_listar(data.get("desde"), data.get("hasta"))})
+            if accion == "insertar":
+                return jsonify({"eventos": sb.agenda_insertar(data.get("eventos"))})
+            if accion == "actualizar":
+                return jsonify({"ok": sb.agenda_actualizar(data.get("id"), data.get("cambios"))})
+            if accion == "borrar":
+                return jsonify({"borrados": sb.agenda_borrar(data.get("ids"))})
+            if accion == "resumen":
+                cuando = "manana" if data.get("cuando") == "manana" else "hoy"
+                fecha = datetime.strptime(data["fecha"], "%Y-%m-%d").date() if data.get("fecha") else None
+                texto = _agenda_resumen(cuando, fecha)
+                enviado = bool(texto and data.get("enviar") and send_message(texto))
+                return jsonify({"texto": texto, "enviado": enviado})
+            if accion == "probar":
+                return jsonify({"enviado": send_message(
+                    "✅ <b>Avisos de la agenda activados</b>\n"
+                    f"Lo de hoy llega a las {AGENDA_HOY_TIME} y lo de mañana a las {AGENDA_MANANA_TIME}.")})
+            if accion == "estado":
+                return jsonify({"ahora": _agenda_ahora().strftime("%Y-%m-%d %H:%M"),
+                                "hoy": AGENDA_HOY_TIME, "manana": AGENDA_MANANA_TIME,
+                                "dueno": bool(sb.agenda_dueno()),
+                                "avisados": sorted(_agenda_avisados)})
+            return jsonify({"error": "acción desconocida"}), 400
+        except Exception as e:
+            logger.error(f"api_agenda_admin: {e}")
+            return jsonify({"error": "error interno"}), 500
 
     @flask_app.route("/webhook", methods=["POST"])
     def webhook():
@@ -2913,6 +3060,8 @@ def main():
     schedule.every().day.at(DATO_NOCHE).do(send_dato_curioso, slot="noche")
     # Módulo Descanso: revisa horarios de luces cada minuto (horas editables desde la web)
     schedule.every().minute.do(check_sueno_triggers)
+    # Agenda: aviso de hoy (mañana temprano) y de mañana (por la tarde), con reintento en su ventana
+    schedule.every(5).minutes.do(check_agenda_avisos)
 
     import threading
 
@@ -2974,6 +3123,7 @@ def main():
                 f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
                 f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
             )
+            check_agenda_avisos()   # por si el reinicio cae al final de una ventana
             threading.Thread(target=_schedule_loop, daemon=True).start()
         except Exception as e:
             logger.error(f"Background init error: {e}")
