@@ -19,12 +19,14 @@ import os
 import sys
 import json
 import yaml
+import html
 import time
 import logging
 import requests
 import schedule
+import threading
 import urllib3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path  # noqa: F401
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -2762,6 +2764,353 @@ def check_agenda_avisos():
         logger.error(f"check_agenda_avisos: {e}")
 
 
+# ── Mi día: avisos por bloque con botones (tablas rutina_bloques / rutina_dias) ──
+# La app y el bot escriben las mismas tablas (reglas en supabase_client.py). El bot crea las
+# filas de hoy y mañana, avisa de cada bloque con botones y recoge lo que contestas:
+# repaso → diario, estudio → «lo aprendido» y cualquier otra respuesta → nota.
+_RUTINA_VENTANA_MIN = 60          # un aviso que llega más tarde que esto ya no se manda
+_RUTINA_CADA_MIN = 15             # cada cuánto se rehacen las filas de hoy y mañana
+_RUTINA_LIMITE_APLAZAR = 23 * 60 + 45     # no se aplaza más allá de las 23:45
+_rutina_ultima_vuelta = None              # datetime (hora de Madrid) de la última pasada
+_rutina_ultima_materializacion = None     # datetime de la última creación de filas
+_rutina_lock = threading.Lock()           # un botón o una respuesta cada vez
+_rutina_pasada_lock = threading.Lock()    # una sola pasada de avisos a la vez (ver lanzar_rutina_avisos)
+_rutina_log_hora = {}                     # clave de error → última vez que se escribió
+
+
+def _rutina_app_url() -> str:
+    """Dirección de la app web, sin barra final, de la variable de entorno VIDA_PWA_URL (el repo es
+    público: no va en el código). Vacía si no está puesta o no es http(s)."""
+    url = os.environ.get("VIDA_PWA_URL", "").strip().rstrip("/")
+    return url if url.startswith(("http://", "https://")) else ""
+
+
+def _rutina_error(clave: str, e) -> None:
+    """Escribe un fallo de la rutina como mucho una vez por hora (el planificador pasa cada minuto)."""
+    ahora = time.time()
+    if ahora - _rutina_log_hora.get(clave, 0) >= 3600:
+        _rutina_log_hora[clave] = ahora
+        logger.error(f"{clave}: {e}")
+
+
+def _rutina_min(hhmm) -> int:
+    """Minutos desde las 00:00 de una hora 'HH:MM'."""
+    h, m = str(hhmm)[:5].split(":")
+    return int(h) * 60 + int(m)
+
+
+def _rutina_hhmm(minutos: int) -> str:
+    minutos %= 1440
+    return f"{minutos // 60:02d}:{minutos % 60:02d}"
+
+
+def _rutina_momento_aviso(fila):
+    """Cuándo toca avisar de una fila: su hora menos aviso_antes_min. None si los datos no valen."""
+    try:
+        dia = datetime.strptime(str(fila.get("fecha"))[:10], "%Y-%m-%d")
+        return dia + timedelta(minutes=_rutina_min(fila.get("hora")) - int(fila.get("aviso_antes_min") or 0))
+    except (ValueError, TypeError):
+        return None
+
+
+def _rutina_enlace(enlace) -> str:
+    """URL lista para el mensaje: las http(s) tal cual y las rutas de la app ('/deporte') completas
+    con VIDA_PWA_URL; sin esa variable las rutas de la app no se pintan."""
+    e = str(enlace or "").strip()
+    if e.startswith(("http://", "https://")):
+        return e
+    app = _rutina_app_url()
+    if app and e.startswith("/") and not e.startswith("//"):
+        return app + e
+    return ""
+
+
+def _rutina_ayer_fallo(fila, filas_ayer: list) -> bool:
+    """True si ayer hubo instancias del mismo bloque (sin contar las movidas) y ninguna se hizo."""
+    bid = fila.get("origen_bloque_id")
+    if bid is None:
+        return False
+    previas = [r for r in filas_ayer if r.get("origen_bloque_id") == bid and r.get("estado") != "movido"]
+    return bool(previas) and not any(r.get("estado") in ("hecho", "minimo") for r in previas)
+
+
+def _rutina_texto_aviso(fila: dict, ayer_fallo: bool = False) -> str:
+    """Texto HTML del aviso de un bloque; todo lo que escribe el usuario pasa por html.escape."""
+    if fila.get("clave") == "repaso":
+        return "✍ <b>Repaso del día</b>\n¿Qué mejorarías mañana? Contesta a este mensaje (una línea basta)."
+    esc = html.escape
+    ini = _rutina_min(fila.get("hora"))
+    rango = f"{_rutina_hhmm(ini)}–{_rutina_hhmm(ini + int(fila.get('duracion_min') or 0))}"
+    emoji = str(fila.get("emoji") or "").strip()
+    titulo = esc(str(fila.get("titulo") or "Bloque"))
+    antes = int(fila.get("aviso_antes_min") or 0)
+    if fila.get("clave") == "gym" and antes > 0:
+        lineas = [f"{esc(emoji or '🏋')} <b>{titulo}</b> en {antes} min · {rango}"]
+    else:
+        lineas = [f"{esc(emoji) + ' ' if emoji else ''}<b>{titulo}</b> · {rango}"]
+    minimo = str(fila.get("minimo_txt") or "").strip() or (
+        f"{fila['minimo_min']} min" if fila.get("minimo_min") else "")
+    if minimo:
+        lineas.append(f"Mínimo: {esc(minimo)}")
+    if ayer_fallo:
+        lineas.append("⚠️ Ayer no se hizo: hoy no lo falles.")
+    enlace = _rutina_enlace(fila.get("enlace"))
+    if enlace:
+        lineas.append(f"🔗 {esc(enlace, quote=False)}")
+    return "\n".join(lineas)
+
+
+def _rutina_teclado(fila_id) -> dict:
+    """Botones del aviso. callback_data = rt:<id>:<h|m|p|n> (un uuid + 6 caracteres: < 64 bytes)."""
+    def boton(texto, accion):
+        return {"text": texto, "callback_data": f"rt:{fila_id}:{accion}"}
+    return {"inline_keyboard": [[boton("✓ Hecho", "h"), boton("◐ Mínimo", "m")],
+                                [boton("⏰ +30 min", "p"), boton("✗ Hoy no", "n")]]}
+
+
+def _rutina_enviar_aviso(fila: dict, ayer_fallo: bool = False) -> bool:
+    """Reclama el aviso (solo un proceso puede), lo manda y guarda el id del mensaje. Si Telegram
+    falla suelta el reclamo para que el minuto siguiente lo reintente. True si salió."""
+    import supabase_client as sb
+    fid = fila.get("id")
+    if not sb.rutina_reclamar_aviso(fid):
+        return False
+    mid = None
+    try:
+        if fila.get("clave") == "repaso":
+            markup = {"force_reply": True, "input_field_placeholder": "Mañana mejoraría…"}
+        else:
+            markup = _rutina_teclado(fid)
+        mid = send_message_return_id(_rutina_texto_aviso(fila, ayer_fallo), reply_markup=markup)
+    except Exception as e:
+        _rutina_error("rutina envío del aviso", e)
+    if mid is None:
+        if not sb.rutina_liberar_aviso(fid):
+            # el reclamo queda puesto y ese aviso ya no se reintentará: que al menos conste en el registro
+            _rutina_error("rutina soltar el reclamo del aviso",
+                          f"fila {fid}: Telegram falló y no se pudo soltar; no se reintentará solo")
+        return False
+    sb.rutina_guardar_msg(fid, "aviso_msg_id", mid)
+    return True
+
+
+def check_rutina_avisos():
+    """Cada minuto: avisa de los bloques de hoy que toquen. Se compara con una ventana
+    (hora de aviso ≤ ahora < hora de aviso + 60 min), nunca con ==: el planificador duerme 60 s
+    fijos y se salta minutos, y tras un reinicio no deben llegar avisos viejos. Cada 15 minutos
+    (y en la primera pasada) rehace las filas de hoy y mañana y da por hechos los gimnasios si
+    hay un entreno registrado. Si Supabase falla se registra como mucho una vez por hora."""
+    global _rutina_ultima_vuelta, _rutina_ultima_materializacion
+    if not IS_CLOUD:
+        return
+    try:
+        import supabase_client as sb
+        ahora = _agenda_ahora()
+        hoy = ahora.date().isoformat()
+        _rutina_ultima_vuelta = ahora
+        ult = _rutina_ultima_materializacion
+        rehacer = (ult is None or ahora < ult or ult.date() != ahora.date()
+                   or ahora - ult >= timedelta(minutes=_RUTINA_CADA_MIN))
+        if rehacer:
+            # Sin filas candidatas (plantilla vacía o la base falló) no se da por hecha la pasada:
+            # el minuto siguiente lo reintenta en vez de esperar 15 min
+            if sb.rutina_materializar(ahora.date(), ahora.date() + timedelta(days=1)) > 0:
+                _rutina_ultima_materializacion = ahora
+        filas = sb.rutina_del_dia(hoy)
+        entreno = None            # se consulta una sola vez por pasada y solo si hace falta
+        if rehacer:
+            for f in filas:
+                if f.get("clave") == "gym" and f.get("estado") == "planificado":
+                    if entreno is None:
+                        entreno = sb.entreno_hecho(hoy)
+                    if entreno and sb.rutina_actualizar(f["id"], {"estado": "hecho"}):
+                        f["estado"] = "hecho"
+        filas_ayer = None
+        for f in filas:
+            if f.get("estado") != "planificado" or f.get("avisado_at") or not f.get("aviso"):
+                continue
+            momento = _rutina_momento_aviso(f)
+            if momento is None or not (momento <= ahora < momento + timedelta(minutes=_RUTINA_VENTANA_MIN)):
+                continue
+            if f.get("clave") == "gym":
+                entreno = sb.entreno_hecho(hoy)       # puede haberse registrado desde la última vez
+                if entreno:
+                    sb.rutina_actualizar(f["id"], {"estado": "hecho"})
+                    continue
+            if filas_ayer is None:
+                filas_ayer = sb.rutina_del_dia((ahora.date() - timedelta(days=1)).isoformat())
+            _rutina_enviar_aviso(f, _rutina_ayer_fallo(f, filas_ayer))
+    except Exception as e:
+        _rutina_error("check_rutina_avisos", e)
+
+
+def lanzar_rutina_avisos() -> bool:
+    """Lo que programa el planificador cada minuto. Todos los trabajos programados comparten UN
+    hilo y esta pasada hace varias consultas a Supabase (hasta 120 s de espera cada una), que
+    retrasarían check_sueno_triggers (compara minutos con ==) y los demás avisos. Por eso corre
+    en su propio hilo, y si la pasada anterior sigue en marcha este minuto se salta (cerrojo
+    sin espera). True si ha arrancado una pasada."""
+    if not _rutina_pasada_lock.acquire(blocking=False):
+        return False
+
+    def _pasada():
+        try:
+            check_rutina_avisos()
+        finally:
+            _rutina_pasada_lock.release()
+
+    try:
+        threading.Thread(target=_pasada, name="rutina-avisos", daemon=True).start()
+    except Exception as e:
+        _rutina_pasada_lock.release()
+        _rutina_error("lanzar_rutina_avisos", e)
+        return False
+    return True
+
+
+def _rutina_preguntar_aprendido(fila: dict, sb) -> None:
+    """Pregunta «¿qué aprendiste?» (respuesta forzada) y guarda el id del mensaje."""
+    titulo = html.escape(str(fila.get("titulo") or "Bloque"))
+    mid = send_message_return_id(
+        f"🧠 ¿Qué aprendiste en {titulo}? Una línea (contesta a este mensaje).",
+        reply_markup={"force_reply": True, "input_field_placeholder": "Hoy aprendí…"})
+    if mid is not None:
+        sb.rutina_guardar_msg(fila["id"], "pregunta_msg_id", mid)
+
+
+def _rutina_tras_hecho(fila: dict, sb, despues=None) -> None:
+    """Efectos de dar un bloque por hecho (o por mínimo): la oración marca el hábito y los
+    bloques de estudio preguntan «lo aprendido». Preguntar es una llamada a Telegram (hasta 30 s):
+    si `despues` es una lista, la pregunta se anota ahí para mandarla con el cerrojo ya libre."""
+    if fila.get("clave") == "oracion":
+        sb.habito_marcar(fila.get("fecha"), "oracion")
+    if fila.get("estudio") and not fila.get("pregunta_msg_id"):
+        if despues is None:
+            _rutina_preguntar_aprendido(fila, sb)
+        else:
+            despues.append(lambda: _rutina_preguntar_aprendido(fila, sb))
+
+
+def _rutina_mensaje_resuelto(message: dict) -> bool:
+    """¿El mensaje de un botón ya muestra un resultado y no un aviso? Un aviso vivo lleva sus
+    botones (Telegram manda su reply_markup); uno ya resuelto, no. Si Telegram no manda el teclado
+    se decide por el texto: empieza por la marca de un resultado y lleva « — » (los avisos separan
+    con « · »), así un bloque cuyo emoji sea ⏰ o ✓ no se confunde con un resultado."""
+    markup = message.get("reply_markup")
+    if isinstance(markup, dict) and markup.get("inline_keyboard"):
+        return False
+    texto = str(message.get("text") or "").lstrip()
+    return texto.startswith(("✓", "◐", "✗", "⏰", "↪")) and " — " in texto
+
+
+def _rutina_aplicar_boton(fila: dict, accion: str, mid, resuelto: bool, ahora: datetime, sb, despues=None):
+    """Aplica un botón. `resuelto`: el mensaje ya muestra un resultado (no hay que editarlo de
+    nuevo). `despues`: lista donde anotar lo lento (Telegram) para hacerlo fuera del cerrojo.
+    Devuelve (aviso corto del botón, texto nuevo del mensaje o None)."""
+    t = html.escape(str(fila.get("titulo") or "Bloque"))
+    estado = fila.get("estado")
+    if estado != "planificado":          # segunda pulsación o ya resuelto desde la app: no se repite nada
+        avisos = {"hecho": ("Ya estaba hecho", f"✓ {t} — hecho"),
+                  "minimo": ("Ya estaba en mínimo", f"◐ {t} — mínimo hecho"),
+                  "no": ("Ya estaba como «hoy no»", f"✗ {t} — hoy no"),
+                  "movido": ("Ya estaba movido", f"↪ {t} — movido")}
+        toast, texto = avisos.get(estado, ("Ya estaba resuelto", t))
+        return toast, (None if resuelto else texto)
+    if accion in ("h", "m", "n"):
+        nuevo = {"h": "hecho", "m": "minimo", "n": "no"}[accion]
+        if not sb.rutina_actualizar(fila["id"], {"estado": nuevo}):
+            return "No pude guardarlo, prueba otra vez", None
+        if accion in ("h", "m"):
+            _rutina_tras_hecho(fila, sb, despues)
+        if accion == "h":
+            return "Hecho", f"✓ {t} — hecho a las {ahora.strftime('%H:%M')}"
+        if accion == "m":
+            return "Mínimo hecho", f"◐ {t} — mínimo hecho"
+        return "Vale, hoy no", f"✗ {t} — hoy no. Mañana sin falta: nunca dos seguidas."
+    # accion == "p": aplazar 30 min
+    antes = int(fila.get("aviso_antes_min") or 0)
+    if not fila.get("avisado_at") or (fila.get("aviso_msg_id") and mid and fila.get("aviso_msg_id") != mid):
+        return "Ya lo aplacé", (None if resuelto else f"⏰ {t} — aplazado")
+    # 30 min desde la hora del bloque o desde ahora, la que sea más tarde: si se pulsa tarde, la
+    # hora nueva no puede quedar en el pasado (no habría aviso, o saldría ya con una hora vieja)
+    nueva = max(_rutina_min(fila.get("hora")), ahora.hour * 60 + ahora.minute) + 30
+    if nueva > _RUTINA_LIMITE_APLAZAR:
+        return "Ya es muy tarde para aplazar (límite 23:45)", None
+    # una sola escritura (hora + reclamo suelto): si falla no se finge que se aplazó
+    if not sb.rutina_aplazar(fila["id"], _rutina_hhmm(nueva)):
+        return "No pude aplazarlo, prueba otra vez", None
+    return "Aplazado 30 min", f"⏰ {t} — te aviso a las {_rutina_hhmm(nueva - antes)}"
+
+
+def handle_rutina_callback(cb: dict):
+    """Botones del aviso de la rutina (rt:<id>:h|m|p|n). Contesta él mismo al botón, con un
+    aviso corto, y edita el mensaje con el resultado (sin botones)."""
+    cb_id = cb.get("id")
+    message = cb.get("message") or {}
+    mid = message.get("message_id")
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    partes = str(cb.get("data", "")).split(":")
+    if len(partes) != 3 or partes[0] != "rt" or partes[2] not in ("h", "m", "p", "n"):
+        answer_callback_query(cb_id)
+        return
+    try:
+        import supabase_client as sb
+        despues = []          # lo lento (Telegram) se hace con el cerrojo ya libre
+        with _rutina_lock:
+            fila = sb.rutina_fila(partes[1])
+            if not fila:
+                # También ocurre si la base falla un momento: no se toca el mensaje (conserva sus botones)
+                answer_callback_query(cb_id, "Ya no existe")
+                return
+            toast, texto = _rutina_aplicar_boton(fila, partes[2], mid, _rutina_mensaje_resuelto(message),
+                                                 _agenda_ahora(), sb, despues)
+        answer_callback_query(cb_id, toast)
+        if texto and mid:
+            edit_message(chat_id, mid, texto)
+        for tarea in despues:
+            try:
+                tarea()
+            except Exception as e:
+                _rutina_error("rutina pregunta de lo aprendido", e)
+    except Exception as e:
+        logger.error(f"handle_rutina_callback: {e}", exc_info=True)
+        answer_callback_query(cb_id, "No pude hacerlo, prueba otra vez")
+
+
+def handle_rutina_respuesta(msg: dict, text: str) -> bool:
+    """Si `text` contesta (responder a) un aviso o una pregunta de la rutina, lo guarda y devuelve
+    True. Repaso → diario (mejora); pregunta de «lo aprendido» → aprendido; cualquier otro
+    aviso → nota. Si no contesta a nada de la rutina devuelve False y el mensaje sigue su camino."""
+    if not IS_CLOUD:
+        return False
+    mid = (msg.get("reply_to_message") or {}).get("message_id")
+    texto = str(text or "").strip()[:1000]
+    if isinstance(mid, bool) or not isinstance(mid, int) or not texto:
+        return False
+    try:
+        import supabase_client as sb
+        fila = sb.rutina_por_mensaje(mid)
+        if not fila:
+            return False
+        with _rutina_lock:
+            if fila.get("pregunta_msg_id") == mid:
+                ok = sb.rutina_actualizar(fila["id"], {"aprendido": sb.anexar_texto(fila.get("aprendido"), texto)})
+                respuesta = "🧠 Apuntado."
+            elif fila.get("clave") == "repaso":
+                ok = sb.diario_guardar(fila.get("fecha"), mejora=texto)
+                if ok and fila.get("estado") != "hecho":
+                    sb.rutina_actualizar(fila["id"], {"estado": "hecho"})
+                respuesta = "📈 Guardado en tu diario."
+            else:
+                ok = sb.rutina_actualizar(fila["id"], {"nota": sb.anexar_texto(fila.get("nota"), texto)})
+                respuesta = "📝 Nota guardada."
+        send_message(respuesta if ok else "❌ No pude guardarlo. Vuelve a intentarlo.")
+        return True
+    except Exception as e:
+        logger.error(f"handle_rutina_respuesta: {e}", exc_info=True)
+        return False
+
+
 def _agenda_admin_ok(req) -> bool:
     """Acceso de mantenimiento a la agenda: la cabecera X-Agenda-Key debe ser
     HMAC-SHA256(BOT_TOKEN, 'agenda-admin'). Solo quien tiene el token del bot
@@ -2877,7 +3226,31 @@ def _make_flask_app():
                 return jsonify({"ahora": _agenda_ahora().strftime("%Y-%m-%d %H:%M"),
                                 "hoy": AGENDA_HOY_TIME, "manana": AGENDA_MANANA_TIME,
                                 "dueno": bool(sb.agenda_dueno()),
-                                "avisados": sorted(_agenda_avisados)})
+                                "avisados": sorted(_agenda_avisados),
+                                "rutina_ultima_vuelta": _rutina_ultima_vuelta.strftime("%Y-%m-%d %H:%M:%S")
+                                if _rutina_ultima_vuelta else None,
+                                "rutina_ultima_materializacion": _rutina_ultima_materializacion.strftime("%Y-%m-%d %H:%M:%S")
+                                if _rutina_ultima_materializacion else None})
+            if accion == "rutina_listar":
+                return jsonify(sb.rutina_listar(data.get("desde"), data.get("hasta")))
+            if accion == "rutina_bloques":
+                op = data.get("op")
+                if op == "insertar":
+                    return jsonify({"bloques": sb.rutina_bloque_insertar(data.get("bloques"), _agenda_ahora())})
+                if op == "actualizar":
+                    return jsonify({"ok": sb.rutina_bloque_actualizar(data.get("id"), data.get("cambios"), _agenda_ahora())})
+                if op == "desactivar":
+                    return jsonify({"ok": sb.rutina_bloque_desactivar(data.get("id"), _agenda_ahora())})
+                return jsonify({"error": "operación desconocida"}), 400
+            if accion == "rutina_probar":
+                # Fila suelta de hoy, a esta hora, y su aviso por el camino normal (reclamo → envío)
+                ahora = _agenda_ahora()
+                fila = sb.rutina_dia_insertar({"fecha": ahora.date().isoformat(), "titulo": "🧪 Prueba del aviso",
+                                               "area": "vida", "hora": ahora.strftime("%H:%M"),
+                                               "duracion_min": 5, "aviso": True, "origen": "manual"})
+                if not fila:
+                    return jsonify({"id": None, "enviado": False})
+                return jsonify({"id": fila.get("id"), "enviado": _rutina_enviar_aviso(fila)})
             return jsonify({"error": "acción desconocida"}), 400
         except Exception as e:
             logger.error(f"api_agenda_admin: {e}")
@@ -2900,6 +3273,12 @@ def _make_flask_app():
             cb_chat = str(cb.get("message", {}).get("chat", {}).get("id", ""))
 
             def _cb():
+                if str(cb.get("data", "")).startswith("rt:"):    # botones de la rutina (Mi día)
+                    if cb_chat == CHAT_ID:
+                        handle_rutina_callback(cb)               # contesta él mismo al botón
+                    else:
+                        answer_callback_query(cb_id)
+                    return
                 answer_callback_query(cb_id)  # cierra el spinner del botón
                 if cb_chat == CHAT_ID:
                     handle_food_callback(cb)
@@ -2944,6 +3323,10 @@ def _make_flask_app():
                     send_message("❌ No pude transcribir el audio. Intenta enviarlo como texto.")
                     return
             if text:
+                # ¿Contesta a un aviso de la rutina (repaso, «lo aprendido», nota)? Va antes que la
+                # corrección de comida: esa marca no caduca y se tragaría la respuesta.
+                if msg.get("reply_to_message") and handle_rutina_respuesta(msg, text):
+                    return
                 # Si venía de pulsar ✏️ Corregir, este texto es la corrección
                 if _pending_correction.get(CHAT_ID):
                     handle_food_correction(text)
@@ -3035,6 +3418,21 @@ def _schedule_loop():
         time.sleep(60)
 
 
+_scheduler_thread = None
+_scheduler_lock = threading.Lock()
+
+
+def _iniciar_scheduler() -> bool:
+    """Arranca el hilo del planificador una sola vez. True si lo ha arrancado esta llamada."""
+    global _scheduler_thread
+    with _scheduler_lock:
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            return False
+        _scheduler_thread = threading.Thread(target=_schedule_loop, daemon=True)
+        _scheduler_thread.start()
+        return True
+
+
 # ── Loop principal ─────────────────────────────────────────────
 def main():
     if not BOT_TOKEN or BOT_TOKEN == "TU_BOT_TOKEN":
@@ -3062,8 +3460,8 @@ def main():
     schedule.every().minute.do(check_sueno_triggers)
     # Agenda: aviso de hoy (mañana temprano) y de mañana (por la tarde), con reintento en su ventana
     schedule.every(5).minutes.do(check_agenda_avisos)
-
-    import threading
+    # Mi día: avisos de cada bloque de la rutina (con ventana de 60 min: se salta minutos sin problema)
+    schedule.every().minute.do(lanzar_rutina_avisos)
 
     # Poller de órdenes manuales de luces (web → Tuya), independiente del scheduler de 60 s
     try:
@@ -3077,13 +3475,23 @@ def main():
         """Configura webhook o inicia polling según APP_URL. Siempre en background."""
         try:
             if APP_URL:
-                # Webhook: registrar URL con Telegram
-                resp = requests.get(
-                    f"{TELEGRAM_API}/setWebhook",
-                    params={"url": f"{APP_URL}/webhook", "drop_pending_updates": True},
-                    verify=SSL_VERIFY, timeout=15,
-                )
-                logger.info(f"Webhook registrado: {resp.json()}")
+                try:
+                    # Webhook: registrar URL con Telegram
+                    resp = requests.get(
+                        f"{TELEGRAM_API}/setWebhook",
+                        params={"url": f"{APP_URL}/webhook", "drop_pending_updates": True},
+                        verify=SSL_VERIFY, timeout=15,
+                    )
+                    logger.info(f"Webhook registrado: {resp.json()}")
+                    send_message(
+                        f"🟢 <b>VIDA BOT — ACTIVO</b>\n"
+                        f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
+                        f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
+                    )
+                    check_agenda_avisos()   # por si el reinicio cae al final de una ventana
+                finally:
+                    # Los avisos no dependen de que setWebhook ni el mensaje de inicio funcionen
+                    _iniciar_scheduler()
             else:
                 # Polling local: bucle en este mismo thread de background
                 logger.info("💻 Modo polling local")
@@ -3093,8 +3501,11 @@ def main():
                             cb = update.get("callback_query")
                             if cb:
                                 if str(cb.get("message", {}).get("chat", {}).get("id", "")) == CHAT_ID:
-                                    answer_callback_query(cb.get("id"))
-                                    handle_food_callback(cb)
+                                    if str(cb.get("data", "")).startswith("rt:"):
+                                        handle_rutina_callback(cb)    # contesta él mismo al botón
+                                    else:
+                                        answer_callback_query(cb.get("id"))
+                                        handle_food_callback(cb)
                                 continue
                             msg = update.get("message", {})
                             incoming = str(msg.get("chat", {}).get("id", ""))
@@ -3107,7 +3518,9 @@ def main():
                                     continue
                                 text = msg.get("text", "").strip()
                                 if text:
-                                    if _pending_correction.get(CHAT_ID):
+                                    if msg.get("reply_to_message") and handle_rutina_respuesta(msg, text):
+                                        pass          # era la respuesta a un aviso de la rutina
+                                    elif _pending_correction.get(CHAT_ID):
                                         handle_food_correction(text)
                                     else:
                                         process_message(text)
@@ -3117,14 +3530,6 @@ def main():
                         logger.error(f"Polling error: {e}")
                         time.sleep(10)
                 return  # nunca llega aquí en polling
-
-            send_message(
-                f"🟢 <b>VIDA BOT — ACTIVO</b>\n"
-                f"⚔️ Nivel: {ov_level} — {ov_name} · {xp_state['total_xp']:,} XP\n"
-                f"Recordatorio a las {REMINDER_TIME}. Escribe /ayuda."
-            )
-            check_agenda_avisos()   # por si el reinicio cae al final de una ventana
-            threading.Thread(target=_schedule_loop, daemon=True).start()
         except Exception as e:
             logger.error(f"Background init error: {e}")
 

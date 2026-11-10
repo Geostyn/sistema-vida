@@ -3,10 +3,13 @@ supabase_client.py — Operaciones cloud del Sistema de Vida.
 Usado por vida_bot.py cuando corre en Fly.io (IS_CLOUD=True).
 """
 import os
+import re
 import json
+import time
+import uuid
 import logging
 import unicodedata
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger("vida_bot")
 
@@ -833,7 +836,7 @@ def agenda_dueno():
             r = get_client().table("perfil_usuario").select("user_id").eq("id", 1).limit(1).execute()
             _agenda_dueno_id = (r.data or [{}])[0].get("user_id") or None
         except Exception as e:
-            logger.error(f"Supabase agenda_dueno: {e}")
+            _rutina_fallo("agenda_dueno", e)     # como mucho una vez por hora: se consulta en cada pasada
     return _agenda_dueno_id
 
 
@@ -915,3 +918,636 @@ def aviso_agenda_enviado(clave: str):
     except Exception as e:
         logger.error(f"Supabase aviso_agenda_enviado: {e}")
         return None
+
+# ── Mi día (tablas rutina_bloques / rutina_dias, las mismas que escribe la PWA) ──
+# Reglas comunes con la app (todas obligatorias):
+#  1. Las filas de un día se crean «insertando e ignorando duplicados»: nunca se pisa una fila.
+#  2. Los cambios van por id (y por dueño) y solo con las columnas que cambian.
+#  3. Solo el bot escribe avisado_at, aviso_msg_id y pregunta_msg_id.
+#  4. Si cambia o se desactiva un bloque, se borran sus filas futuras sin tocar (planificadas, sin
+#     avisar, de la plantilla y nunca editadas: updated_at == created_at) y se rehacen las de hoy
+#     y mañana.
+#  5. Con la service_role no hay RLS: TODA lectura filtra por dueño y TODA inserción lo pone.
+# Todas las funciones devuelven un valor seguro si algo falla y registran el error como mucho
+# una vez por hora y función (el planificador pasa cada minuto: no debe llenar el registro).
+
+_RUTINA_AREAS = ("alma", "mente", "cuerpo", "negocio", "trabajo", "vida")
+_RUTINA_CLAVES = ("gym", "repaso", "oracion")
+_RUTINA_ESTADOS = ("planificado", "hecho", "minimo", "no", "movido")
+_RUTINA_ORIGENES = ("plantilla", "manual", "rescate", "hueco")
+_RUTINA_COPIA = ("titulo", "emoji", "area", "hora", "duracion_min", "minimo_min", "minimo_txt",
+                 "enlace", "aviso", "aviso_antes_min", "estudio", "clave")
+_HABITOS_COLS = ("ducha_fria", "te_clavo", "oracion", "silencio", "creatina")
+_RUTINA_HORA_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
+_RUTINA_MAX_DIAS = 62
+_rutina_err_log = {}
+
+
+def _rutina_fallo(op: str, e):
+    """Registra un error de la rutina como mucho una vez por hora y operación."""
+    ahora = time.time()
+    if ahora - _rutina_err_log.get(op, 0) >= 3600:
+        _rutina_err_log[op] = ahora
+        logger.error(f"Supabase {op}: {e}")
+
+
+def _rutina_hora(v):
+    """'HH:MM' válida (acepta 'HH:MM:SS') o None."""
+    s = str(v or "").strip()
+    if len(s) == 8 and s[5] == ":":
+        s = s[:5]
+    return s if _RUTINA_HORA_RE.fullmatch(s) else None
+
+
+def _rutina_entero(v, lo: int, hi: int):
+    """Entero dentro de [lo, hi] o None (los booleanos y los decimales no cuentan)."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        if isinstance(v, float):
+            if v != int(v):
+                return None
+            n = int(v)
+        else:
+            n = int(str(v).strip())
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return n if lo <= n <= hi else None
+
+
+def _rutina_bool(v):
+    """True/False, o None si no es un booleano reconocible."""
+    if isinstance(v, bool):
+        return v
+    if v in (0, 1) and not isinstance(v, str):
+        return bool(v)
+    if isinstance(v, str) and v.strip().lower() in ("true", "false"):
+        return v.strip().lower() == "true"
+    return None
+
+
+def _rutina_fecha_dia(v):
+    """date de una fecha ISO (o date) o None."""
+    s = _agenda_fecha(v)
+    return date.fromisoformat(s) if s else None
+
+
+def _rutina_ahora_madrid() -> datetime:
+    """Hora local de España (sin zona) para quien no recibe `ahora` de fuera."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Madrid")).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
+def _rutina_sanear_bloque(e, completo: bool = True):
+    """Campos válidos de un bloque de la plantilla, o None si algún valor es inválido.
+    completo=True (alta): los que faltan toman su valor por defecto y titulo/hora son obligatorios.
+    completo=False (cambio): solo salen los campos que venían. Nunca pasan id, user_id ni
+    columnas que no sean de la plantilla."""
+    if not isinstance(e, dict):
+        return None
+    out = {}
+    if completo or "titulo" in e:
+        titulo = str(e.get("titulo") or "").strip()[:200]
+        if not titulo:
+            return None
+        out["titulo"] = titulo
+    if completo or "hora" in e:
+        hora = _rutina_hora(e.get("hora"))
+        if not hora:
+            return None
+        out["hora"] = hora
+    if completo or "dias" in e:
+        bruto = e.get("dias", [0, 1, 2, 3, 4, 5, 6])
+        if not isinstance(bruto, (list, tuple)):
+            return None
+        dias = [_rutina_entero(d, 0, 6) for d in bruto]
+        if not dias or any(d is None for d in dias):
+            return None
+        out["dias"] = sorted(set(dias))
+    if completo or "area" in e:
+        area = e.get("area") if e.get("area") is not None else "mente"
+        if area not in _RUTINA_AREAS:
+            return None
+        out["area"] = area
+    if completo or "emoji" in e:
+        out["emoji"] = str(e.get("emoji") or "").strip()[:16] or None
+    if completo or "duracion_min" in e:
+        dur = _rutina_entero(30 if e.get("duracion_min") is None else e.get("duracion_min"), 1, 720)
+        if dur is None:
+            return None
+        out["duracion_min"] = dur
+    if completo or "minimo_min" in e:
+        bruto = e.get("minimo_min")
+        mini = None if bruto in (None, "") else _rutina_entero(bruto, 1, 720)
+        if bruto not in (None, "") and mini is None:
+            return None
+        out["minimo_min"] = mini
+    if completo or "minimo_txt" in e:
+        out["minimo_txt"] = str(e.get("minimo_txt") or "").strip()[:200] or None
+    if completo or "enlace" in e:
+        enlace = str(e.get("enlace") or "").strip()[:500]
+        ok = enlace.startswith(("http://", "https://")) or (enlace.startswith("/") and not enlace.startswith("//"))
+        out["enlace"] = enlace if enlace and ok else None
+    if completo or "aviso" in e:
+        aviso = True if e.get("aviso") is None else _rutina_bool(e.get("aviso"))
+        if aviso is None:
+            return None
+        out["aviso"] = aviso
+    if completo or "aviso_antes_min" in e:
+        antes = _rutina_entero(0 if e.get("aviso_antes_min") is None else e.get("aviso_antes_min"), 0, 240)
+        if antes is None:
+            return None
+        out["aviso_antes_min"] = antes
+    if completo or "estudio" in e:
+        estudio = False if e.get("estudio") is None else _rutina_bool(e.get("estudio"))
+        if estudio is None:
+            return None
+        out["estudio"] = estudio
+    if completo or "clave" in e:
+        clave = e.get("clave") or None
+        if clave is not None and clave not in _RUTINA_CLAVES:
+            return None
+        out["clave"] = clave
+    if completo or "orden" in e:
+        orden = _rutina_entero(0 if e.get("orden") is None else e.get("orden"), 0, 100000)
+        if orden is None:
+            return None
+        out["orden"] = orden
+    if "activo" in e:
+        activo = _rutina_bool(e.get("activo"))
+        if activo is None:
+            return None
+        out["activo"] = activo
+    return out
+
+
+def _rutina_bloques_a_filas(bloques: list, desde: date, hasta: date, dueno) -> list:
+    """Filas de día (sin id ni columnas del bot) de cada bloque en cada fecha de [desde, hasta]
+    cuyo día de la semana (0 = lunes) esté en `dias`. Todas con las mismas claves."""
+    filas = []
+    dia = desde
+    while dia <= hasta:
+        for b in bloques:
+            if dia.weekday() not in (b.get("dias") or []):
+                continue
+            fila = {k: b.get(k) for k in _RUTINA_COPIA}
+            fila.update({"user_id": dueno, "fecha": dia.isoformat(), "bloque_id": b["id"],
+                         "origen_bloque_id": b["id"], "estado": "planificado", "origen": "plantilla"})
+            filas.append(fila)
+        dia += timedelta(days=1)
+    return filas
+
+
+def _rutina_insertar_ignorando(filas: list) -> None:
+    """Regla 1: insertar e ignorar los duplicados (user_id, fecha, bloque_id)."""
+    for i in range(0, len(filas), 100):
+        get_client().table("rutina_dias").upsert(
+            filas[i:i + 100], on_conflict="user_id,fecha,bloque_id", ignore_duplicates=True).execute()
+
+
+def rutina_bloques_activos() -> list:
+    """Bloques activos de la plantilla del dueño."""
+    dueno = agenda_dueno()
+    if not dueno:
+        return []
+    try:
+        r = get_client().table("rutina_bloques").select("*").eq("user_id", dueno) \
+            .eq("activo", True).order("orden", desc=False).order("hora", desc=False).limit(500).execute()
+        return r.data or []
+    except Exception as e:
+        _rutina_fallo("rutina_bloques_activos", e)
+        return []
+
+
+def rutina_materializar(desde, hasta) -> int:
+    """Crea las filas de cada día entre `desde` y `hasta` (ambos incluidos, máx. 62 días) para los
+    bloques activos cuyo día de la semana toque. Idempotente (regla 1). Devuelve cuántas filas
+    candidatas había (las que ya existían se ignoran en la base de datos)."""
+    d, h = _rutina_fecha_dia(desde), _rutina_fecha_dia(hasta)
+    dueno = agenda_dueno()
+    if not d or not h or not dueno:
+        return 0
+    h = min(max(h, d), d + timedelta(days=_RUTINA_MAX_DIAS - 1))
+    try:
+        bloques = rutina_bloques_activos()
+        filas = _rutina_bloques_a_filas(bloques, d, h, dueno)
+        if filas:
+            _rutina_insertar_ignorando(filas)
+        return len(filas)
+    except Exception as e:
+        _rutina_fallo("rutina_materializar", e)
+        return 0
+
+
+def rutina_del_dia(fecha) -> list:
+    """Filas de rutina_dias del dueño en una fecha, por hora."""
+    f = _agenda_fecha(fecha)
+    dueno = agenda_dueno()
+    if not f or not dueno:
+        return []
+    try:
+        r = get_client().table("rutina_dias").select("*").eq("user_id", dueno).eq("fecha", f) \
+            .order("hora", desc=False).order("created_at", desc=False).limit(500).execute()
+        return r.data or []
+    except Exception as e:
+        _rutina_fallo("rutina_del_dia", e)
+        return []
+
+
+def _rutina_uuid(v):
+    """uuid en texto canónico o None."""
+    try:
+        return str(uuid.UUID(str(v)))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def rutina_fila(fila_id):
+    """Una fila de rutina_dias del dueño por su id, o None."""
+    uid = _rutina_uuid(fila_id)
+    dueno = agenda_dueno()
+    if not uid or not dueno:
+        return None
+    try:
+        r = get_client().table("rutina_dias").select("*").eq("id", uid).eq("user_id", dueno) \
+            .limit(1).execute()
+        return (r.data or [None])[0]
+    except Exception as e:
+        _rutina_fallo("rutina_fila", e)
+        return None
+
+
+def rutina_por_mensaje(msg_id):
+    """La fila del dueño cuyo aviso_msg_id o pregunta_msg_id es ese mensaje de Telegram, o None."""
+    if isinstance(msg_id, bool) or not isinstance(msg_id, int):
+        return None
+    dueno = agenda_dueno()
+    if not dueno:
+        return None
+    try:
+        r = get_client().table("rutina_dias").select("*").eq("user_id", dueno) \
+            .or_(f"aviso_msg_id.eq.{msg_id},pregunta_msg_id.eq.{msg_id}") \
+            .order("created_at", desc=True).limit(1).execute()
+        return (r.data or [None])[0]
+    except Exception as e:
+        _rutina_fallo("rutina_por_mensaje", e)
+        return None
+
+
+def rutina_reclamar_aviso(fila_id) -> bool:
+    """Reclamo atómico del aviso: pone avisado_at solo si seguía vacío Y la fila sigue planificada
+    (entre leerla y reclamarla la app pudo darla por hecha: entonces no debe avisar). True
+    únicamente si esta llamada fue la que lo puso (una fila vuelve en la respuesta): solo un
+    proceso puede enviar."""
+    uid = _rutina_uuid(fila_id)
+    dueno = agenda_dueno()
+    if not uid or not dueno:
+        return False
+    try:
+        r = get_client().table("rutina_dias").update(
+            {"avisado_at": datetime.now(timezone.utc).isoformat()}) \
+            .eq("id", uid).eq("user_id", dueno).eq("estado", "planificado") \
+            .is_("avisado_at", "null").execute()
+        return bool(r.data)
+    except Exception as e:
+        _rutina_fallo("rutina_reclamar_aviso", e)
+        return False
+
+
+def rutina_guardar_msg(fila_id, campo: str, msg_id) -> bool:
+    """Guarda aviso_msg_id o pregunta_msg_id (solo los escribe el bot)."""
+    uid = _rutina_uuid(fila_id)
+    dueno = agenda_dueno()
+    if campo not in ("aviso_msg_id", "pregunta_msg_id") or not uid or not dueno \
+            or isinstance(msg_id, bool) or not isinstance(msg_id, int):
+        return False
+    try:
+        r = get_client().table("rutina_dias").update({campo: msg_id}) \
+            .eq("id", uid).eq("user_id", dueno).execute()
+        return bool(r.data)
+    except Exception as e:
+        _rutina_fallo("rutina_guardar_msg", e)
+        return False
+
+
+def rutina_liberar_aviso(fila_id) -> bool:
+    """Suelta el reclamo (avisado_at y aviso_msg_id a nulo): el siguiente minuto vuelve a avisar."""
+    uid = _rutina_uuid(fila_id)
+    dueno = agenda_dueno()
+    if not uid or not dueno:
+        return False
+    try:
+        r = get_client().table("rutina_dias").update({"avisado_at": None, "aviso_msg_id": None}) \
+            .eq("id", uid).eq("user_id", dueno).execute()
+        return bool(r.data)
+    except Exception as e:
+        _rutina_fallo("rutina_liberar_aviso", e)
+        return False
+
+
+def rutina_aplazar(fila_id, hora) -> bool:
+    """Aplaza un aviso en UNA sola escritura: la hora nueva y el reclamo suelto (avisado_at y
+    aviso_msg_id a nulo), solo si la fila del dueño sigue planificada. True si cambió una fila:
+    la hora y el reclamo nunca quedan a medias ni se aplaza algo que la app ya dio por resuelto."""
+    uid = _rutina_uuid(fila_id)
+    nueva = _rutina_hora(hora)
+    dueno = agenda_dueno()
+    if not uid or not nueva or not dueno:
+        return False
+    try:
+        r = get_client().table("rutina_dias").update(
+            {"hora": nueva, "avisado_at": None, "aviso_msg_id": None}) \
+            .eq("id", uid).eq("user_id", dueno).eq("estado", "planificado").execute()
+        return bool(r.data)
+    except Exception as e:
+        _rutina_fallo("rutina_aplazar", e)
+        return False
+
+
+def rutina_actualizar(fila_id, cambios: dict) -> bool:
+    """Cambia una fila del día por id y dueño, solo con columnas permitidas:
+    estado, hora, nota, aprendido y minutos_reales."""
+    uid = _rutina_uuid(fila_id)
+    dueno = agenda_dueno()
+    if not uid or not dueno or not isinstance(cambios, dict):
+        return False
+    datos = {}
+    if "estado" in cambios:
+        if cambios["estado"] not in _RUTINA_ESTADOS:
+            return False
+        datos["estado"] = cambios["estado"]
+    if "hora" in cambios:
+        hora = _rutina_hora(cambios["hora"])
+        if not hora:
+            return False
+        datos["hora"] = hora
+    for campo in ("nota", "aprendido"):
+        if campo in cambios:
+            datos[campo] = str(cambios[campo] or "").strip()[:4000] or None
+    if "minutos_reales" in cambios:
+        mins = None if cambios["minutos_reales"] is None else _rutina_entero(cambios["minutos_reales"], 0, 1440)
+        if cambios["minutos_reales"] is not None and mins is None:
+            return False
+        datos["minutos_reales"] = mins
+    if not datos:
+        return False
+    try:
+        r = get_client().table("rutina_dias").update(datos).eq("id", uid).eq("user_id", dueno).execute()
+        return bool(r.data)
+    except Exception as e:
+        _rutina_fallo("rutina_actualizar", e)
+        return False
+
+
+def rutina_dia_insertar(fila: dict):
+    """Inserta una fila suelta en un día (bloque_id nulo: no choca con nada). Devuelve la fila
+    creada (con su id) o None. Campos: los del bloque + fecha, origen y estado."""
+    dueno = agenda_dueno()
+    datos = _rutina_sanear_bloque(fila, completo=True) if isinstance(fila, dict) else None
+    fecha = _agenda_fecha(fila.get("fecha")) if isinstance(fila, dict) else ""
+    if not dueno or datos is None or not fecha:
+        return None
+    nueva = {k: datos[k] for k in _RUTINA_COPIA}
+    origen = fila.get("origen") if fila.get("origen") in _RUTINA_ORIGENES else "manual"
+    nueva.update({"user_id": dueno, "fecha": fecha, "bloque_id": None, "origen_bloque_id": None,
+                  "estado": "planificado", "origen": origen})
+    try:
+        r = get_client().table("rutina_dias").insert(nueva).execute()
+        return (r.data or [None])[0]
+    except Exception as e:
+        _rutina_fallo("rutina_dia_insertar", e)
+        return None
+
+
+_RUTINA_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?\s*(Z|[+-]\d{2}(?::?\d{2})?)?")
+
+
+def _rutina_instante(v):
+    """Marca de tiempo de Postgres ('2026-11-09T08:00:17.1234+00:00', con 'Z', con 0 a 9 cifras de
+    fracción) como datetime en UTC sin zona, o None si no se entiende. A mano porque
+    datetime.fromisoformat de Python 3.9 rechaza 'Z' y las fracciones de 1, 2, 4 o 5 cifras."""
+    m = _RUTINA_TS_RE.fullmatch(str(v or "").strip())
+    if not m:
+        return None
+    dia, hh, mm, ss, frac, zona = m.groups()
+    try:
+        t = datetime.strptime(f"{dia} {hh}:{mm}:{ss}", "%Y-%m-%d %H:%M:%S") \
+            .replace(microsecond=int((frac or "0")[:6].ljust(6, "0")))
+        if zona and zona != "Z":
+            cifras = zona[1:].replace(":", "")
+            t -= (-1 if zona[0] == "-" else 1) * timedelta(hours=int(cifras[:2]), minutes=int(cifras[2:4] or 0))
+        return t
+    except (ValueError, OverflowError):
+        return None
+
+
+def _rutina_sin_editar(fila: dict) -> bool:
+    """True solo si nadie editó nunca la fila (updated_at == created_at: el disparador de la base
+    sube updated_at en cada cambio). Si falta uno de los dos o no se entiende, cuenta como editada."""
+    c, u = _rutina_instante(fila.get("created_at")), _rutina_instante(fila.get("updated_at"))
+    return c is not None and u is not None and c == u
+
+
+def rutina_rehacer_bloque(bloque_id, hoy, ahora_hhmm) -> dict:
+    """Regla 4 (igual que la app): tras cambiar o desactivar un bloque, borra sus filas futuras
+    sin tocar (planificado, sin avisar, de la plantilla, con fecha > hoy o de hoy con hora > ahora
+    Y nunca editadas: updated_at == created_at, así una nota, un cambio de hora o un «+30 min» se
+    conservan) y recrea las de hoy y mañana si el bloque sigue activo. PostgREST no compara dos
+    columnas entre sí: se eligen los candidatos en la base y lo de «nunca editada» se mira aquí.
+    Devuelve {'borradas': n, 'creadas': n}."""
+    res = {"borradas": 0, "creadas": 0}
+    dueno = agenda_dueno()
+    d = _rutina_fecha_dia(hoy)
+    hhmm = _rutina_hora(ahora_hhmm)
+    bid = _rutina_entero(bloque_id, 1, 2 ** 62)
+    if not dueno or not d or not hhmm or bid is None:
+        return res
+    try:
+        c = get_client()
+        hoy_iso = d.isoformat()
+        candidatas = c.table("rutina_dias").select("id,fecha,hora,created_at,updated_at") \
+            .eq("user_id", dueno).eq("bloque_id", bid).gte("fecha", hoy_iso) \
+            .eq("estado", "planificado").eq("origen", "plantilla").is_("avisado_at", "null") \
+            .limit(1000).execute().data or []
+        ids = []
+        for f in candidatas:
+            fecha, hora, fid = str(f.get("fecha") or "")[:10], _rutina_hora(f.get("hora")), _rutina_uuid(f.get("id"))
+            futura = fecha > hoy_iso or (fecha == hoy_iso and hora is not None and hora > hhmm)
+            if fid and futura and _rutina_sin_editar(f):
+                ids.append(fid)
+        for i in range(0, len(ids), 100):
+            # se repiten estado y avisado_at: si el bot avisó o la app la resolvió desde la consulta, no se borra
+            borradas = c.table("rutina_dias").delete().in_("id", ids[i:i + 100]).eq("user_id", dueno) \
+                .eq("estado", "planificado").is_("avisado_at", "null").execute()
+            res["borradas"] += len(borradas.data or [])
+        r = get_client().table("rutina_bloques").select("*").eq("id", bid).eq("user_id", dueno) \
+            .eq("activo", True).limit(1).execute()
+        if r.data:
+            filas = _rutina_bloques_a_filas(r.data, d, d + timedelta(days=1), dueno)
+            if filas:
+                _rutina_insertar_ignorando(filas)
+            res["creadas"] = len(filas)
+    except Exception as e:
+        _rutina_fallo("rutina_rehacer_bloque", e)
+    return res
+
+
+def rutina_listar(desde, hasta=None) -> dict:
+    """Plantilla (todos los bloques, también los desactivados), filas de los días y diario del
+    dueño entre dos fechas (máx. 62 días). Cada consulta pide 1000 filas como mucho: es el tope de
+    PostgREST (más no devuelve), y 62 días de 16 bloques caben justos."""
+    vacio = {"bloques": [], "dias": [], "diario": []}
+    d = _rutina_fecha_dia(desde)
+    h = _rutina_fecha_dia(hasta) or d
+    dueno = agenda_dueno()
+    if not d or not dueno:
+        return vacio
+    h = min(max(h, d), d + timedelta(days=_RUTINA_MAX_DIAS - 1))
+    try:
+        c = get_client()
+        bloques = c.table("rutina_bloques").select("*").eq("user_id", dueno) \
+            .order("orden", desc=False).order("id", desc=False).limit(500).execute().data or []
+        dias = c.table("rutina_dias").select("*").eq("user_id", dueno) \
+            .gte("fecha", d.isoformat()).lte("fecha", h.isoformat()) \
+            .order("fecha", desc=False).order("hora", desc=False).limit(1000).execute().data or []
+        diario = c.table("diario").select("*").eq("user_id", dueno) \
+            .gte("fecha", d.isoformat()).lte("fecha", h.isoformat()) \
+            .order("fecha", desc=False).order("created_at", desc=False).limit(500).execute().data or []
+        return {"bloques": bloques, "dias": dias, "diario": diario}
+    except Exception as e:
+        _rutina_fallo("rutina_listar", e)
+        return vacio
+
+
+def rutina_bloque_insertar(lista, ahora: datetime = None) -> list:
+    """Da de alta bloques de la plantilla (los inválidos se descartan) y crea ya sus filas de hoy
+    y mañana. Devuelve los bloques creados (con su id)."""
+    if not isinstance(lista, list):
+        return []
+    dueno = agenda_dueno()
+    filas = []
+    for e in lista[:100]:
+        datos = _rutina_sanear_bloque(e, completo=True)
+        if datos is not None:
+            datos.setdefault("activo", True)
+            filas.append(dict(datos, user_id=dueno))
+    if not filas or not dueno:
+        return []
+    try:
+        r = get_client().table("rutina_bloques").insert(filas).execute()
+        creados = r.data or []
+        hoy = (ahora or _rutina_ahora_madrid()).date()
+        nuevas = _rutina_bloques_a_filas([b for b in creados if b.get("activo", True)],
+                                         hoy, hoy + timedelta(days=1), dueno)
+        if nuevas:
+            _rutina_insertar_ignorando(nuevas)
+        return creados
+    except Exception as e:
+        _rutina_fallo("rutina_bloque_insertar", e)
+        return []
+
+
+def rutina_bloque_actualizar(bloque_id, cambios: dict, ahora: datetime = None) -> bool:
+    """Cambia campos de un bloque por id y dueño; después aplica la regla 4 (rehace sus filas)."""
+    bid = _rutina_entero(bloque_id, 1, 2 ** 62)
+    dueno = agenda_dueno()
+    datos = _rutina_sanear_bloque(cambios, completo=False)
+    if bid is None or not dueno or not datos:
+        return False
+    try:
+        r = get_client().table("rutina_bloques").update(datos).eq("id", bid).eq("user_id", dueno).execute()
+        if not r.data:
+            return False
+        ahora = ahora or _rutina_ahora_madrid()
+        rutina_rehacer_bloque(bid, ahora.date(), ahora.strftime("%H:%M"))
+        return True
+    except Exception as e:
+        _rutina_fallo("rutina_bloque_actualizar", e)
+        return False
+
+
+def rutina_bloque_desactivar(bloque_id, ahora: datetime = None) -> bool:
+    """Desactiva un bloque (nunca se borra) y retira sus filas futuras sin tocar."""
+    return rutina_bloque_actualizar(bloque_id, {"activo": False}, ahora)
+
+
+# ── Diario, hábitos y entreno (lo que la rutina escribe o consulta) ──
+
+def anexar_texto(viejo, nuevo: str, tope: int = 4000) -> str:
+    """Texto final al añadir `nuevo` a `viejo`: solo si viejo está vacío, ' · ' + nuevo si no
+    lo contenía ya."""
+    viejo = str(viejo or "").strip()
+    if not viejo:
+        return nuevo
+    if nuevo in viejo:
+        return viejo
+    return (viejo + " · " + nuevo)[:tope]
+
+
+def diario_guardar(fecha, mejora=None, lo_importante=None) -> bool:
+    """Guarda en el diario de `fecha` (la de la fila, no la de hoy). Si ya hay fila ese día
+    (la más reciente) se actualiza, y un texto ya escrito no se pisa: se le añade ' · ' + lo
+    nuevo. Si no hay fila, se crea una."""
+    f = _agenda_fecha(fecha)
+    dueno = agenda_dueno()
+    nuevos = {k: str(v).strip()[:1000] for k, v in (("mejora", mejora), ("lo_importante", lo_importante))
+              if v is not None and str(v).strip()}
+    if not f or not dueno or not nuevos:
+        return False
+    try:
+        c = get_client()
+        r = c.table("diario").select("*").eq("user_id", dueno).eq("fecha", f) \
+            .order("created_at", desc=True).limit(1).execute()
+        if r.data:
+            fila = r.data[0]
+            cambios = {}
+            for k, nuevo in nuevos.items():
+                final = anexar_texto(fila.get(k), nuevo)
+                if final != str(fila.get(k) or "").strip():
+                    cambios[k] = final
+            if cambios:
+                c.table("diario").update(cambios).eq("id", fila["id"]).eq("user_id", dueno).execute()
+            return True
+        c.table("diario").insert(dict(nuevos, fecha=f, user_id=dueno)).execute()
+        return True
+    except Exception as e:
+        _rutina_fallo("diario_guardar", e)
+        return False
+
+
+def habito_marcar(fecha, clave: str) -> bool:
+    """Marca un hábito (ducha_fria, te_clavo, oracion, silencio, creatina) como hecho en `fecha`:
+    actualiza todas las filas del dueño de ese día (la app y el bot pueden haber creado varias)
+    y, si no había ninguna, crea una."""
+    f = _agenda_fecha(fecha)
+    dueno = agenda_dueno()
+    if clave not in _HABITOS_COLS or not f or not dueno:
+        return False
+    try:
+        c = get_client()
+        r = c.table("habitos").update({clave: True}).eq("user_id", dueno).eq("fecha", f).execute()
+        if not r.data:
+            c.table("habitos").insert({"user_id": dueno, "fecha": f, clave: True}).execute()
+        return True
+    except Exception as e:
+        _rutina_fallo("habito_marcar", e)
+        return False
+
+
+def entreno_hecho(fecha) -> bool:
+    """True si ese día hay una sesión de gimnasio hecha: evento de agenda de tipo 'entreno',
+    estado 'hecho' y notas que empiezan por '#rot' (las que deja la rutina de gimnasio)."""
+    f = _agenda_fecha(fecha)
+    dueno = agenda_dueno()
+    if not f or not dueno:
+        return False
+    try:
+        r = get_client().table("agenda_eventos").select("id").eq("user_id", dueno).eq("fecha", f) \
+            .eq("tipo", "entreno").eq("estado", "hecho").like("notas", "#rot%").limit(1).execute()
+        return bool(r.data)
+    except Exception as e:
+        _rutina_fallo("entreno_hecho", e)
+        return False
